@@ -58,6 +58,36 @@ select count(*) from payments;
 select count(*) from payments where transaction_date = '2026-05-08';
 ```
 
+## BASIC_LOOP 정산 배치
+
+성능 개선 전 기준점을 만들기 위해 BASIC_LOOP 방식의 일별 정산 배치를 제공합니다. 이 단계에서는 GROUP BY 쿼리, 인덱스 튜닝, 벌크 저장 최적화를 적용하지 않고, 특정 정산일자의 Payment 데이터를 모두 조회한 뒤 Java 반복문으로 가맹점별 금액을 집계합니다.
+
+API 목록:
+
+```text
+POST /api/settlements/run?date=2026-05-08&strategy=BASIC_LOOP
+GET  /api/settlements?date=2026-05-08
+GET  /api/batch-histories
+```
+
+프론트에서 확인:
+
+```bash
+./gradlew bootRun
+
+cd frontend
+npm run dev
+```
+
+`http://localhost:5173`에서 정산일자 `2026-05-08`, 처리 전략 `BASIC_LOOP`을 선택한 뒤 정산 배치 실행 버튼을 누르면 백엔드 API를 호출하고 정산 결과와 배치 실행 이력을 갱신합니다.
+
+DB에서 직접 확인:
+
+```sql
+select count(*) from settlements where settlement_date = '2026-05-08';
+select * from batch_job_histories order by started_at desc;
+```
+
 ## 브랜치 전략
 
 본 프로젝트는 기능 단위 개발 흐름을 관리하기 위해 `main`, `develop`, `feat` 브랜치를 분리하여 사용합니다.
