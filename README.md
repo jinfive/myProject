@@ -1,2 +1,44 @@
 # myProject
-myProject
+
+## 브랜치 전략
+
+본 프로젝트는 기능 단위 개발 흐름을 관리하기 위해 `main`, `develop`, `feat` 브랜치를 분리하여 사용합니다.
+
+- `main`: 최종 배포 가능한 안정 버전 관리
+- `develop`: 기능 개발 결과를 통합하는 브랜치
+- `feat/{issue-number}-{feature-name}`: GitHub Issue 단위 기능 개발 브랜치
+
+기능 개발은 GitHub Issue로 작업 범위를 정의한 뒤 `feat` 브랜치에서 구현하고, Pull Request를 통해 `develop` 브랜치에 병합합니다. 최종 기능 검증 후 `develop` 브랜치를 `main` 브랜치에 병합하는 방식으로 관리합니다.
+
+### 개발 흐름
+
+```text
+main
+└── develop
+    └── feat/{issue-number}-{feature-name}
+```
+
+1. GitHub Issue 생성
+2. `develop` 브랜치에서 `feat/{issue-number}-{feature-name}` 브랜치 생성
+3. 기능 구현 및 커밋
+4. 기능 브랜치를 원격 저장소에 push
+5. Pull Request 생성
+   - base: `develop`
+   - compare: `feat/{issue-number}-{feature-name}`
+6. 리뷰 및 테스트 후 `develop` 브랜치에 병합
+7. 최종 검증 후 `develop`에서 `main`으로 Pull Request 생성 및 병합
+
+### 브랜치 예시
+
+```text
+feat/1-project-setup
+feat/2-merchant-create
+feat/3-payment-create
+feat/4-payment-cancel
+feat/5-daily-settlement
+feat/6-prevent-duplicate-settlement
+feat/7-batch-history
+feat/8-settlement-read
+feat/9-exception-test
+feat/10-readme
+```
