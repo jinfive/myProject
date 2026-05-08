@@ -1,0 +1,12 @@
+spring:
+  application:
+    name: myProject
+  datasource:
+    url: jdbc:postgresql://localhost:5432/finco_db
+    username: root
+    password: 1234
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
