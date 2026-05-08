@@ -10,3 +10,11 @@ spring:
     hibernate:
       ddl-auto: update
     open-in-view: false
+
+dummy-data:
+  enabled: true
+  merchant-count: 100
+  payment-count: 100000
+  target-date-payment-count: 70000
+  target-date: 2026-05-08
+  batch-size: 1000
