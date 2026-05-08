@@ -158,6 +158,9 @@ public class DummyDataService {
         }
 
         int offset = (index - properties.getTargetDatePaymentCount()) % 14;
+        if (offset >= 7) {
+            offset++;
+        }
         return properties.getTargetDate().minusDays(7).plusDays(offset);
     }
 

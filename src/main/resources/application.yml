@@ -2,7 +2,7 @@ spring:
   application:
     name: myProject
   datasource:
-    url: jdbc:postgresql://localhost:5432/finco_db
+    url: jdbc:postgresql://localhost:5432/settlement_perf_db
     username: root
     password: 1234
     driver-class-name: org.postgresql.Driver

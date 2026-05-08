@@ -22,6 +22,8 @@ npm run dev
 
 애플리케이션 실행 시 성능 테스트용 더미 데이터를 자동 생성합니다. 이미 `Merchant` 또는 `Payment` 데이터가 존재하면 중복 생성을 방지하기 위해 생성 작업을 건너뜁니다.
 
+기본 로컬 DB는 PostgreSQL의 `settlement_perf_db`를 사용합니다.
+
 기본 생성 기준은 다음과 같습니다.
 
 - Merchant: 100개
