@@ -1,6 +1,10 @@
 .gradle/
 build/
 out/
+node_modules/
+dist/
+frontend/node_modules/
+frontend/dist/
 
 *.class
 *.log
