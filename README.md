@@ -18,6 +18,46 @@ npm run dev
 
 개발 서버 기본 주소는 `http://localhost:5173`입니다.
 
+## 성능 테스트용 더미 데이터 생성
+
+애플리케이션 실행 시 성능 테스트용 더미 데이터를 자동 생성합니다. 이미 `Merchant` 또는 `Payment` 데이터가 존재하면 중복 생성을 방지하기 위해 생성 작업을 건너뜁니다.
+
+기본 로컬 DB는 PostgreSQL의 `settlement_perf_db`를 사용합니다.
+
+기본 생성 기준은 다음과 같습니다.
+
+- Merchant: 100개
+- Payment: 100,000건
+- 성능 테스트 기준일: `2026-05-08`
+- `2026-05-08` Payment: 70,000건
+- 결제/취소 데이터 모두 `COMPLETED` 상태로 포함
+- 각 Merchant는 서로 다른 수수료율을 가짐
+
+실행 방법:
+
+```bash
+./gradlew bootRun
+```
+
+생성 여부와 건수는 애플리케이션 로그에서 확인할 수 있습니다.
+
+```text
+Dummy data generation started at ...
+Dummy data generation finished at ...
+Dummy data generation elapsedMs=...
+Merchant total count=100
+Payment total count=100000
+Payment count for 2026-05-08=70000
+```
+
+DB에서 직접 확인할 때는 다음 쿼리를 사용할 수 있습니다.
+
+```sql
+select count(*) from merchants;
+select count(*) from payments;
+select count(*) from payments where transaction_date = '2026-05-08';
+```
+
 ## 브랜치 전략
 
 본 프로젝트는 기능 단위 개발 흐름을 관리하기 위해 `main`, `develop`, `feat` 브랜치를 분리하여 사용합니다.
