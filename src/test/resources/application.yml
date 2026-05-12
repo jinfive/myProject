@@ -10,3 +10,6 @@ spring:
 
 dummy-data:
   enabled: false
+
+benchmark:
+  data-date-sync-enabled: false

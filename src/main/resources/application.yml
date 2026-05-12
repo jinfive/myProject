@@ -18,3 +18,6 @@ dummy-data:
   target-date-payment-count: 70000
   target-date: 2026-05-08
   batch-size: 1000
+
+benchmark:
+  data-date-sync-enabled: true

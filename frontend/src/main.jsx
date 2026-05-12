@@ -1,165 +1,92 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import axios from 'axios';
 import './styles.css';
 
-const strategies = ['BASIC_LOOP', 'GROUP_BY_QUERY', 'BULK_SAVE', 'INDEX_APPLIED'];
+const API_BASE_URL = 'http://localhost:8080/api';
+const strategies = ['BASIC_LOOP', 'GROUP_BY_QUERY', 'GROUP_BY_BULK_SAVE', 'GROUP_BY_BULK_INDEX'];
 
-const strategyProfiles = {
-  BASIC_LOOP: {
-    processedCount: 100000,
-    paymentAmount: 850000000,
-    cancelAmount: 43000000,
-    feeAmount: 24210000,
-    settlementAmount: 782790000,
-    elapsedMs: 3520,
-  },
-  GROUP_BY_QUERY: {
-    processedCount: 100000,
-    paymentAmount: 850000000,
-    cancelAmount: 43000000,
-    feeAmount: 24210000,
-    settlementAmount: 782790000,
-    elapsedMs: 810,
-  },
-  BULK_SAVE: {
-    processedCount: 100000,
-    paymentAmount: 850000000,
-    cancelAmount: 43000000,
-    feeAmount: 24210000,
-    settlementAmount: 782790000,
-    elapsedMs: 620,
-  },
-  INDEX_APPLIED: {
-    processedCount: 100000,
-    paymentAmount: 850000000,
-    cancelAmount: 43000000,
-    feeAmount: 24210000,
-    settlementAmount: 782790000,
-    elapsedMs: 410,
-  },
+const emptySummary = {
+  processedCount: 0,
+  totalPaymentAmount: 0,
+  totalCancelAmount: 0,
+  totalFeeAmount: 0,
+  totalSettlementAmount: 0,
+  elapsedMs: 0,
+  settlements: [],
 };
 
-const merchantRows = [
-  {
-    merchantName: '핀코페이 강남점',
-    paymentAmount: 182500000,
-    cancelAmount: 8200000,
-    feeRate: 0.028,
-  },
-  {
-    merchantName: '에이치마트 온라인',
-    paymentAmount: 156200000,
-    cancelAmount: 5100000,
-    feeRate: 0.031,
-  },
-  {
-    merchantName: '라이트커머스',
-    paymentAmount: 128900000,
-    cancelAmount: 7300000,
-    feeRate: 0.026,
-  },
-  {
-    merchantName: '모던서플라이',
-    paymentAmount: 96700000,
-    cancelAmount: 3900000,
-    feeRate: 0.024,
-  },
-  {
-    merchantName: '브릿지스토어',
-    paymentAmount: 74200000,
-    cancelAmount: 2400000,
-    feeRate: 0.029,
-  },
-];
-
-const historyRows = [
-  {
-    executedAt: '2026-05-08 14:30:10',
-    settlementDate: '2026-05-08',
-    strategy: 'BASIC_LOOP',
-    processedCount: 100000,
-    successCount: 99720,
-    failureCount: 280,
-    elapsedMs: 3520,
-    status: 'SUCCESS',
-  },
-  {
-    executedAt: '2026-05-08 14:38:42',
-    settlementDate: '2026-05-08',
-    strategy: 'GROUP_BY_QUERY',
-    processedCount: 100000,
-    successCount: 99880,
-    failureCount: 120,
-    elapsedMs: 810,
-    status: 'SUCCESS',
-  },
-  {
-    executedAt: '2026-05-08 14:47:21',
-    settlementDate: '2026-05-08',
-    strategy: 'BULK_SAVE',
-    processedCount: 100000,
-    successCount: 99910,
-    failureCount: 90,
-    elapsedMs: 620,
-    status: 'SUCCESS',
-  },
-  {
-    executedAt: '2026-05-08 14:55:33',
-    settlementDate: '2026-05-08',
-    strategy: 'INDEX_APPLIED',
-    processedCount: 100000,
-    successCount: 99936,
-    failureCount: 64,
-    elapsedMs: 410,
-    status: 'SUCCESS',
-  },
-];
+const toNumber = (value) => Number(value ?? 0);
 
 const formatWon = (value) =>
   new Intl.NumberFormat('ko-KR', {
     style: 'currency',
     currency: 'KRW',
     maximumFractionDigits: 0,
-  }).format(value);
+  }).format(toNumber(value));
 
-const formatCount = (value) => `${new Intl.NumberFormat('ko-KR').format(value)}건`;
-const formatMs = (value) => `${new Intl.NumberFormat('ko-KR').format(value)}ms`;
-const formatPercent = (value) => `${(value * 100).toFixed(1)}%`;
+const formatCount = (value) => `${new Intl.NumberFormat('ko-KR').format(toNumber(value))}건`;
+const formatMs = (value) => `${new Intl.NumberFormat('ko-KR').format(toNumber(value))}ms`;
+const formatPercent = (value) => `${(toNumber(value) * 100).toFixed(2)}%`;
 
 function App() {
   const [settlementDate, setSettlementDate] = useState('2026-05-08');
   const [strategy, setStrategy] = useState('BASIC_LOOP');
-  const [lastRun, setLastRun] = useState(historyRows[0]);
+  const [summary, setSummary] = useState(emptySummary);
+  const [histories, setHistories] = useState([]);
+  const [isRunning, setIsRunning] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
 
-  const summary = strategyProfiles[strategy];
+  const lastRun = histories[0];
 
-  const settlementRows = useMemo(
-    () =>
-      merchantRows.map((row) => {
-        const netSales = row.paymentAmount - row.cancelAmount;
-        const feeAmount = Math.round(netSales * row.feeRate);
-        return {
-          ...row,
-          netSales,
-          feeAmount,
-          settlementAmount: netSales - feeAmount,
-        };
-      }),
-    [],
-  );
-
-  const handleRun = () => {
-    setLastRun({
-      executedAt: new Date().toLocaleString('sv-SE').replace('T', ' '),
-      settlementDate,
-      strategy,
-      processedCount: summary.processedCount,
-      successCount: summary.processedCount - 72,
-      failureCount: 72,
-      elapsedMs: summary.elapsedMs,
-      status: 'SUCCESS',
+  const fetchSettlements = async (date, selectedStrategy) => {
+    const response = await axios.get(`${API_BASE_URL}/settlements`, {
+      params: { date, strategy: selectedStrategy },
     });
+    setSummary(response.data);
   };
+
+  const fetchHistories = async () => {
+    const response = await axios.get(`${API_BASE_URL}/batch-histories`);
+    setHistories(response.data);
+  };
+
+  const refreshDashboard = async (date, selectedStrategy) => {
+    await Promise.all([fetchSettlements(date, selectedStrategy), fetchHistories()]);
+  };
+
+  useEffect(() => {
+    refreshDashboard(settlementDate, strategy).catch(() => {
+      setErrorMessage('대시보드 데이터를 불러오지 못했습니다. 백엔드 서버 상태를 확인하세요.');
+    });
+  }, [settlementDate, strategy]);
+
+  const handleRun = async () => {
+    setIsRunning(true);
+    setErrorMessage('');
+
+    try {
+      const response = await axios.post(`${API_BASE_URL}/settlements/run`, null, {
+        params: {
+          date: settlementDate,
+          strategy,
+        },
+      });
+      setSummary(response.data);
+      await fetchHistories();
+    } catch (error) {
+      const message = error.response?.data?.message ?? '정산 배치 실행 중 오류가 발생했습니다.';
+      setErrorMessage(message);
+      await refreshDashboard(settlementDate, strategy).catch(() => undefined);
+    } finally {
+      setIsRunning(false);
+    }
+  };
+
+  const elapsedRows = useMemo(
+    () => histories.filter((history) => history.strategy === strategy).slice(0, 5),
+    [histories, strategy],
+  );
 
   return (
     <main className="min-h-screen bg-panel text-ink">
@@ -169,7 +96,7 @@ function App() {
             <p className="text-sm font-semibold text-accent">Settlement Performance</p>
             <h1 className="text-2xl font-semibold tracking-normal text-ink">정산 성능 대시보드</h1>
             <p className="max-w-3xl text-sm leading-6 text-muted">
-              대용량 정산 배치를 실행하고 처리 전략별 결과와 실행 시간을 비교하는 업무 대시보드입니다.
+              BASIC_LOOP 기준선과 단계형 개선 전략별 정산 결과, 실행 이력, 처리 시간을 비교합니다.
             </p>
           </div>
 
@@ -203,30 +130,39 @@ function App() {
               <div className="w-full rounded-md border border-line bg-white px-4 py-3">
                 <p className="text-xs font-semibold text-muted">최근 실행</p>
                 <p className="mt-1 text-sm font-semibold text-ink">
-                  {lastRun.strategy} · {formatCount(lastRun.processedCount)} · {formatMs(lastRun.elapsedMs)}
+                  {lastRun
+                    ? `${lastRun.strategy} · ${formatCount(lastRun.processedCount)} · ${formatMs(lastRun.elapsedMs)}`
+                    : '아직 실행 이력이 없습니다.'}
                 </p>
               </div>
             </div>
 
             <button
-              className="h-11 self-end rounded-md bg-accent px-5 text-sm font-semibold text-white hover:bg-teal-800"
+              className="h-11 self-end rounded-md bg-accent px-5 text-sm font-semibold text-white hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-slate-400"
               type="button"
               onClick={handleRun}
+              disabled={isRunning}
             >
-              정산 배치 실행
+              {isRunning ? '정산 실행 중...' : '정산 배치 실행'}
             </button>
           </div>
+
+          {errorMessage && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-warning">
+              {errorMessage}
+            </div>
+          )}
         </div>
       </section>
 
       <div className="mx-auto flex max-w-7xl flex-col gap-6 px-6 py-6">
         <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
           <MetricCard label="총 처리 건수" value={formatCount(summary.processedCount)} />
-          <MetricCard label="총 결제금액" value={formatWon(summary.paymentAmount)} />
-          <MetricCard label="총 취소금액" value={formatWon(summary.cancelAmount)} />
-          <MetricCard label="총 수수료" value={formatWon(summary.feeAmount)} />
-          <MetricCard label="총 정산금액" value={formatWon(summary.settlementAmount)} strong />
-          <MetricCard label="배치 처리 시간" value={formatMs(summary.elapsedMs)} accent />
+          <MetricCard label="총 결제금액" value={formatWon(summary.totalPaymentAmount)} />
+          <MetricCard label="총 취소금액" value={formatWon(summary.totalCancelAmount)} />
+          <MetricCard label="총 수수료" value={formatWon(summary.totalFeeAmount)} />
+          <MetricCard label="총 정산금액" value={formatWon(summary.totalSettlementAmount)} strong />
+          <MetricCard label={`${strategy} 처리 시간`} value={formatMs(summary.elapsedMs)} accent />
         </section>
 
         <section className="grid gap-6 xl:grid-cols-[1fr_420px]">
@@ -236,6 +172,7 @@ function App() {
                 <thead className="bg-slate-100 text-xs font-semibold uppercase text-muted">
                   <tr>
                     <Th>가맹점명</Th>
+                    <Th>처리 전략</Th>
                     <Th align="right">총 결제금액</Th>
                     <Th align="right">총 취소금액</Th>
                     <Th align="right">순매출</Th>
@@ -245,42 +182,55 @@ function App() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-line">
-                  {settlementRows.map((row) => (
-                    <tr key={row.merchantName} className="bg-white">
-                      <Td strong>{row.merchantName}</Td>
-                      <Td align="right">{formatWon(row.paymentAmount)}</Td>
-                      <Td align="right">{formatWon(row.cancelAmount)}</Td>
-                      <Td align="right">{formatWon(row.netSales)}</Td>
-                      <Td align="right">{formatPercent(row.feeRate)}</Td>
-                      <Td align="right">{formatWon(row.feeAmount)}</Td>
-                      <Td align="right" strong>
-                        {formatWon(row.settlementAmount)}
-                      </Td>
+                  {summary.settlements.length === 0 ? (
+                    <tr className="bg-white">
+                      <td className="px-4 py-8 text-center text-muted" colSpan="8">
+                        선택한 날짜의 정산 결과가 없습니다.
+                      </td>
                     </tr>
-                  ))}
+                  ) : (
+                    summary.settlements.map((row) => (
+                      <tr key={row.id} className="bg-white">
+                        <Td strong>{row.merchantName}</Td>
+                        <Td>{row.strategy}</Td>
+                        <Td align="right">{formatWon(row.totalPaymentAmount)}</Td>
+                        <Td align="right">{formatWon(row.totalCancelAmount)}</Td>
+                        <Td align="right">{formatWon(row.netSalesAmount)}</Td>
+                        <Td align="right">{formatPercent(row.feeRate)}</Td>
+                        <Td align="right">{formatWon(row.feeAmount)}</Td>
+                        <Td align="right" strong>
+                          {formatWon(row.finalSettlementAmount)}
+                        </Td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
           </DataPanel>
 
-          <DataPanel title="전략별 처리 시간">
-            <div className="space-y-4">
-              {strategies.map((item) => {
-                const elapsedMs = strategyProfiles[item].elapsedMs;
-                const width = `${Math.max(12, (elapsedMs / strategyProfiles.BASIC_LOOP.elapsedMs) * 100)}%`;
-                return (
-                  <div key={item}>
-                    <div className="mb-2 flex items-center justify-between gap-3 text-sm">
-                      <span className="font-semibold text-ink">{item}</span>
-                      <span className="tabular-nums text-muted">{formatMs(elapsedMs)}</span>
+          <DataPanel title={`${strategy} 처리 시간`}>
+            {elapsedRows.length === 0 ? (
+              <p className="text-sm text-muted">아직 선택한 전략의 실행 이력이 없습니다.</p>
+            ) : (
+              <div className="space-y-4">
+                {elapsedRows.map((item) => {
+                  const maxElapsedMs = Math.max(...elapsedRows.map((history) => history.elapsedMs));
+                  const width = `${Math.max(12, (item.elapsedMs / maxElapsedMs) * 100)}%`;
+                  return (
+                    <div key={item.id}>
+                      <div className="mb-2 flex items-center justify-between gap-3 text-sm">
+                        <span className="font-semibold text-ink">{formatDateTime(item.startedAt)}</span>
+                        <span className="tabular-nums text-muted">{formatMs(item.elapsedMs)}</span>
+                      </div>
+                      <div className="h-3 rounded-full bg-slate-100">
+                        <div className="h-3 rounded-full bg-accent" style={{ width }} />
+                      </div>
                     </div>
-                    <div className="h-3 rounded-full bg-slate-100">
-                      <div className="h-3 rounded-full bg-accent" style={{ width }} />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
           </DataPanel>
         </section>
 
@@ -297,27 +247,37 @@ function App() {
                   <Th align="right">실패 건수</Th>
                   <Th align="right">실행 시간</Th>
                   <Th>상태</Th>
+                  <Th>실패 원인</Th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
-                {[lastRun, ...historyRows.filter((row) => row.strategy !== lastRun.strategy)].map((row) => (
-                  <tr key={`${row.executedAt}-${row.strategy}`} className="bg-white">
-                    <Td>{row.executedAt}</Td>
-                    <Td>{row.settlementDate}</Td>
-                    <Td strong>{row.strategy}</Td>
-                    <Td align="right">{formatCount(row.processedCount)}</Td>
-                    <Td align="right">{formatCount(row.successCount)}</Td>
-                    <Td align="right">{formatCount(row.failureCount)}</Td>
-                    <Td align="right" strong>
-                      {formatMs(row.elapsedMs)}
-                    </Td>
-                    <Td>
-                      <span className="rounded-full bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700">
-                        {row.status}
-                      </span>
-                    </Td>
+                {histories.length === 0 ? (
+                  <tr className="bg-white">
+                    <td className="px-4 py-8 text-center text-muted" colSpan="9">
+                      배치 실행 이력이 없습니다.
+                    </td>
                   </tr>
-                ))}
+                ) : (
+                  histories.map((row) => (
+                    <tr key={row.id} className="bg-white">
+                      <Td>{formatDateTime(row.startedAt)}</Td>
+                      <Td>{row.settlementDate}</Td>
+                      <Td strong>{row.strategy}</Td>
+                      <Td align="right">{formatCount(row.processedCount)}</Td>
+                      <Td align="right">{formatCount(row.successCount)}</Td>
+                      <Td align="right">{formatCount(row.failureCount)}</Td>
+                      <Td align="right" strong>
+                        {formatMs(row.elapsedMs)}
+                      </Td>
+                      <Td>
+                        <span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClassName(row.status)}`}>
+                          {row.status}
+                        </span>
+                      </Td>
+                      <Td>{row.errorMessage ?? '-'}</Td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
@@ -325,6 +285,24 @@ function App() {
       </div>
     </main>
   );
+}
+
+function statusClassName(status) {
+  if (status === 'SUCCESS') {
+    return 'bg-emerald-50 text-emerald-700';
+  }
+  if (status === 'FAILED') {
+    return 'bg-rose-50 text-rose-700';
+  }
+  return 'bg-sky-50 text-sky-700';
+}
+
+function formatDateTime(value) {
+  if (!value) {
+    return '-';
+  }
+
+  return value.replace('T', ' ').slice(0, 19);
 }
 
 function MetricCard({ label, value, strong = false, accent = false }) {
