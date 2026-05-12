@@ -99,6 +99,14 @@
 - 성능 비교 결과 문서화 부족
 - PPT용 설명 구조 부족
 
+현재 로컬 벤치마크 정책:
+
+- 대용량 성능 비교를 반복하기 위해 기존 Payment 데이터를 재사용한다.
+- 기존 Payment가 있으면 새로 insert하지 않고, 필요할 때 `transaction_date`만 오늘 날짜로 동기화한다.
+- 날짜가 바뀌면 기존 Settlement는 원천 데이터와 맞지 않으므로 삭제한다.
+- BatchJobHistory는 실행 이력이므로 삭제하지 않는다.
+- 이 기능은 운영 기능이 아니라 개발용 기능이며 `benchmark.data-date-sync-enabled` 설정으로 제어한다.
+
 ---
 
 ### 2.2 2단계 목표
@@ -524,8 +532,8 @@ README와 PPT에 처리 시간 비교표와 개선 이유를 정리한다.
 
 ```txt
 GROUP_BY_QUERY
-BULK_SAVE
-INDEX_APPLIED
+GROUP_BY_BULK_SAVE
+GROUP_BY_BULK_INDEX
 ```
 
 또한 금융권 포트폴리오로 설득력을 갖기 위해 다음도 필요하다.

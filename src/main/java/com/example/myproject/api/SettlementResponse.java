@@ -1,5 +1,6 @@
 package com.example.myproject.api;
 
+import com.example.myproject.domain.batch.SettlementStrategy;
 import com.example.myproject.domain.settlement.Settlement;
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -7,6 +8,7 @@ import java.time.LocalDate;
 public record SettlementResponse(
         Long id,
         LocalDate settlementDate,
+        SettlementStrategy strategy,
         Long merchantId,
         String merchantName,
         BigDecimal totalPaymentAmount,
@@ -21,6 +23,7 @@ public record SettlementResponse(
         return new SettlementResponse(
                 settlement.getId(),
                 settlement.getSettlementDate(),
+                settlement.getProcessingStrategy(),
                 settlement.getMerchant().getId(),
                 settlement.getMerchant().getName(),
                 settlement.getTotalPaymentAmount(),

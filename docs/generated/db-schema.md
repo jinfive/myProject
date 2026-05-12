@@ -305,8 +305,8 @@ payment_date 또는 payment_date + merchant_id 복합 인덱스를 적용한다.
 ```txt
 BASIC_LOOP
 GROUP_BY_QUERY
-BULK_SAVE
-INDEX_APPLIED
+GROUP_BY_BULK_SAVE
+GROUP_BY_BULK_INDEX
 ```
 
 따라서 중복 정산 방지 기준은 단순히 `merchant_id + settlement_date`만으로 잡으면 안 된다.
@@ -367,6 +367,195 @@ INDEX_APPLIED
 금액 계산에는 `BigDecimal`을 사용한다.
 
 성능 비교를 위해 같은 날짜에 여러 전략 결과를 저장할 수 있도록 `processing_strategy`를 포함한다.
+
+현재 마이그레이션 도구는 도입하지 않았다. 기존 로컬 DB가 있는 경우 Hibernate `ddl-auto: update`만으로는 `processing_strategy` NOT NULL 컬럼 추가가 실패할 수 있으므로 애플리케이션 시작 시 로컬 PostgreSQL 스키마 보정 러너가 아래와 같은 순서로 보정한다. 직접 확인하거나 수동으로 처리해야 하는 경우 아래 SQL을 실행한다.
+
+기존 `settlements`, `batch_job_histories` 데이터는 BASIC_LOOP 기준선 실행으로 생성된 데이터로 간주하고 `processing_strategy = 'BASIC_LOOP'`로 backfill한다. 그 후 `NOT NULL`, check constraint, unique constraint를 적용한다. 코드에서는 `processingStrategy`를 nullable로 낮추지 않고, DB 데이터를 보정한 뒤 NOT NULL을 유지한다.
+
+```sql
+begin;
+
+-- 1. 기존 데이터가 있는 테이블에 NOT NULL 컬럼을 바로 추가하지 않는다.
+alter table settlements
+    add column if not exists processing_strategy varchar(30);
+
+alter table batch_job_histories
+    add column if not exists processing_strategy varchar(30);
+
+-- RUNNING 이력은 아직 종료 시간이 없으므로 ended_at은 nullable이어야 한다.
+alter table batch_job_histories
+    alter column ended_at drop not null;
+
+-- 예전 스키마의 strategy 컬럼이 남아 있으면 현재 코드는 값을 쓰지 않으므로 nullable이어야 한다.
+do $$
+begin
+    if exists (
+        select 1
+        from information_schema.columns
+        where table_schema = current_schema()
+          and table_name = 'batch_job_histories'
+          and column_name = 'strategy'
+    ) then
+        alter table batch_job_histories
+            alter column strategy drop not null;
+    end if;
+end $$;
+
+-- 기존 status check constraint가 RUNNING을 허용하지 않으면 제거한다.
+alter table batch_job_histories
+    drop constraint if exists batch_job_histories_status_check;
+
+-- 이름이 다른 status check constraint가 남아 있는 로컬 DB를 위한 보조 제거 로직이다.
+do $$
+declare
+    constraint_name text;
+begin
+    for constraint_name in
+        select c.conname
+        from pg_constraint c
+        join pg_class t on t.oid = c.conrelid
+        join pg_namespace n on n.oid = t.relnamespace
+        where n.nspname = current_schema()
+          and t.relname = 'batch_job_histories'
+          and c.contype = 'c'
+          and exists (
+              select 1
+              from unnest(c.conkey) as cols(attnum)
+              join pg_attribute a on a.attrelid = t.oid and a.attnum = cols.attnum
+              where a.attname = 'status'
+          )
+    loop
+        execute format('alter table batch_job_histories drop constraint %I', constraint_name);
+    end loop;
+end $$;
+
+alter table batch_job_histories
+    add constraint batch_job_histories_status_check
+    check (status in ('RUNNING', 'SUCCESS', 'FAILED'));
+
+-- 2. 기존 로컬 데이터는 BASIC_LOOP 기준선 결과로 backfill한다.
+update settlements
+set processing_strategy = 'BASIC_LOOP'
+where processing_strategy is null;
+
+update batch_job_histories
+set processing_strategy = 'BASIC_LOOP'
+where processing_strategy is null;
+
+-- 3. 허용 전략 값만 저장되도록 check constraint를 적용한다.
+alter table settlements
+    drop constraint if exists ck_settlements_processing_strategy;
+
+alter table settlements
+    drop constraint if exists settlements_processing_strategy_check;
+
+alter table settlements
+    add constraint ck_settlements_processing_strategy
+    check (processing_strategy in (
+        'BASIC_LOOP',
+        'GROUP_BY_QUERY',
+        'GROUP_BY_BULK_SAVE',
+        'GROUP_BY_BULK_INDEX'
+    ));
+
+alter table batch_job_histories
+    drop constraint if exists ck_batch_job_histories_processing_strategy;
+
+alter table batch_job_histories
+    drop constraint if exists batch_job_histories_processing_strategy_check;
+
+alter table batch_job_histories
+    add constraint ck_batch_job_histories_processing_strategy
+    check (processing_strategy in (
+        'BASIC_LOOP',
+        'GROUP_BY_QUERY',
+        'GROUP_BY_BULK_SAVE',
+        'GROUP_BY_BULK_INDEX'
+    ));
+
+-- 4. backfill 이후 NOT NULL을 적용한다.
+alter table settlements
+    alter column processing_strategy set not null;
+
+alter table batch_job_histories
+    alter column processing_strategy set not null;
+
+-- 5. 기존 merchant_id + settlement_date unique 제약을 제거한다.
+alter table settlements
+    drop constraint if exists uk_settlements_merchant_settlement_date;
+
+alter table settlements
+    drop constraint if exists uk_settlements_merchant_date;
+
+-- 이름이 다른 unique 제약이 남아 있는 로컬 DB를 위한 보조 제거 로직이다.
+do $$
+declare
+    constraint_name text;
+begin
+    for constraint_name in
+        select c.conname
+        from pg_constraint c
+        join pg_class t on t.oid = c.conrelid
+        join pg_namespace n on n.oid = t.relnamespace
+        where n.nspname = current_schema()
+          and t.relname = 'settlements'
+          and c.contype = 'u'
+          and (
+              select array_agg(a.attname::text order by u.ordinality)
+              from unnest(c.conkey) with ordinality as u(attnum, ordinality)
+              join pg_attribute a on a.attrelid = t.oid and a.attnum = u.attnum
+          ) = array['merchant_id', 'settlement_date']
+    loop
+        execute format('alter table settlements drop constraint %I', constraint_name);
+    end loop;
+end $$;
+
+-- 6. 전략별 정산 결과 저장을 허용하는 새 unique 제약을 적용한다.
+do $$
+begin
+    if not exists (
+        select 1
+        from pg_constraint
+        where conname = 'uk_settlements_merchant_date_strategy'
+          and conrelid = 'settlements'::regclass
+    ) then
+        alter table settlements
+            add constraint uk_settlements_merchant_date_strategy
+            unique (merchant_id, settlement_date, processing_strategy);
+    end if;
+end $$;
+
+commit;
+```
+
+마이그레이션 후 확인 쿼리:
+
+```sql
+select processing_strategy, count(*)
+from settlements
+group by processing_strategy;
+
+select processing_strategy, count(*)
+from batch_job_histories
+group by processing_strategy;
+
+select conname, pg_get_constraintdef(oid)
+from pg_constraint
+where conrelid = 'settlements'::regclass
+  and contype = 'u';
+
+select
+    conname as constraint_name,
+    pg_get_constraintdef(oid) as constraint_definition
+from pg_constraint
+where conrelid = 'batch_job_histories'::regclass;
+
+select
+    conname as constraint_name,
+    pg_get_constraintdef(oid) as constraint_definition
+from pg_constraint
+where conrelid = 'settlements'::regclass;
+```
 
 ---
 
@@ -1055,10 +1244,10 @@ Planned
 
 | 값 | 설명 |
 |---|---|
-| BASIC_LOOP | 전체 조회 후 Java 반복문 집계 |
+| BASIC_LOOP | 전체 조회 후 Java 반복문 집계 기준선 |
 | GROUP_BY_QUERY | DB GROUP BY 기반 집계 |
-| BULK_SAVE | 정산 결과 일괄 저장 |
-| INDEX_APPLIED | 인덱스 적용 후 처리 |
+| GROUP_BY_BULK_SAVE | DB GROUP BY 기반 집계 후 정산 결과 일괄 저장 |
+| GROUP_BY_BULK_INDEX | DB GROUP BY 기반 집계, 일괄 저장, 조회 조건 인덱스 적용 |
 
 ### batch_status
 
@@ -1067,7 +1256,6 @@ Planned
 | RUNNING | 실행 중 |
 | SUCCESS | 성공 |
 | FAILED | 실패 |
-| PARTIAL_FAILED | 부분 실패 |
 
 ---
 

@@ -63,8 +63,8 @@
 * 일자별 정산 배치 실행
 * BASIC_LOOP 방식 기준선 구현
 * GROUP_BY_QUERY 방식 개선
-* BULK_SAVE 방식 개선
-* INDEX_APPLIED 방식 개선
+* GROUP_BY_BULK_SAVE 방식 개선
+* GROUP_BY_BULK_INDEX 방식 개선
 * 배치 실행 이력 관리
 * 실패 이력 관리
 * 정산 결과와 원천 데이터의 대사
@@ -421,8 +421,8 @@ DummyDataService
 
 * BASIC_LOOP 전략 구현
 * GROUP_BY_QUERY 전략 구현
-* BULK_SAVE 전략 구현
-* INDEX_APPLIED 전략 구현
+* GROUP_BY_BULK_SAVE 전략 구현
+* GROUP_BY_BULK_INDEX 전략 구현
 * 전략별 성능 비교가 가능하도록 처리 흐름 분리
 
 권장 구조:
@@ -627,8 +627,8 @@ Client
 ```txt
 BASIC_LOOP
 GROUP_BY_QUERY
-BULK_SAVE
-INDEX_APPLIED
+GROUP_BY_BULK_SAVE
+GROUP_BY_BULK_INDEX
 ```
 
 ---
@@ -687,7 +687,7 @@ Payment 전체 조회 제거
 
 ---
 
-### 10.3 BULK_SAVE
+### 10.3 GROUP_BY_BULK_SAVE
 
 향후 구현할 저장 성능 개선 전략이다.
 
@@ -709,7 +709,7 @@ Settlement를 한 건씩 저장하지 않음
 
 ---
 
-### 10.4 INDEX_APPLIED
+### 10.4 GROUP_BY_BULK_INDEX
 
 향후 구현할 인덱스 적용 전략이다.
 
@@ -851,8 +851,8 @@ settlement_date + merchant_id
 |---|---:|---:|---|
 | BASIC_LOOP | 100,000건 | 측정값 | 전체 조회 후 Java 반복문 집계 |
 | GROUP_BY_QUERY | 100,000건 | 측정값 | DB GROUP BY 집계 |
-| BULK_SAVE | 100,000건 | 측정값 | 정산 결과 일괄 저장 |
-| INDEX_APPLIED | 100,000건 | 측정값 | 조회 조건 인덱스 적용 |
+| GROUP_BY_BULK_SAVE | 100,000건 | 측정값 | DB GROUP BY 집계 + 정산 결과 일괄 저장 |
+| GROUP_BY_BULK_INDEX | 100,000건 | 측정값 | DB GROUP BY 집계 + 일괄 저장 + 조회 조건 인덱스 적용 |
 ```
 
 ---
@@ -877,8 +877,8 @@ settlement_date + merchant_id
 
 * BASIC_LOOP 처리 시간
 * GROUP_BY_QUERY 처리 시간
-* BULK_SAVE 처리 시간
-* INDEX_APPLIED 처리 시간
+* GROUP_BY_BULK_SAVE 처리 시간
+* GROUP_BY_BULK_INDEX 처리 시간
 * 개선율
 
 ### 15.2 대사 결과 화면
@@ -1159,4 +1159,3 @@ PPT에 반드시 포함할 내용:
 * 실패 이력은 추적 가능해야 한다.
 * 성능 개선 결과는 README와 PPT에 수치로 정리한다.
 * 1단계 배치 프로젝트를 먼저 완성한 뒤 2단계 실시간 처리로 확장한다.
-

@@ -16,7 +16,8 @@ public record BatchJobHistoryResponse(
         long processedCount,
         long successCount,
         long failureCount,
-        BatchJobStatus status
+        BatchJobStatus status,
+        String errorMessage
 ) {
 
     public static BatchJobHistoryResponse from(BatchJobHistory history) {
@@ -30,7 +31,8 @@ public record BatchJobHistoryResponse(
                 history.getProcessedCount(),
                 history.getSuccessCount(),
                 history.getFailureCount(),
-                history.getStatus()
+                history.getStatus(),
+                history.getErrorMessage()
         );
     }
 }

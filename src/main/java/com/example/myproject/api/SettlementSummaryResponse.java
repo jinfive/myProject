@@ -1,10 +1,12 @@
 package com.example.myproject.api;
 
+import com.example.myproject.domain.batch.SettlementStrategy;
 import com.example.myproject.domain.settlement.Settlement;
 import java.math.BigDecimal;
 import java.util.List;
 
 public record SettlementSummaryResponse(
+        SettlementStrategy strategy,
         long processedCount,
         BigDecimal totalPaymentAmount,
         BigDecimal totalCancelAmount,
@@ -15,6 +17,7 @@ public record SettlementSummaryResponse(
 ) {
 
     public static SettlementSummaryResponse of(
+            SettlementStrategy strategy,
             long processedCount,
             long elapsedMs,
             List<Settlement> settlements
@@ -32,6 +35,7 @@ public record SettlementSummaryResponse(
         }
 
         return new SettlementSummaryResponse(
+                strategy,
                 processedCount,
                 totalPaymentAmount,
                 totalCancelAmount,

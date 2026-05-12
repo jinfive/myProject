@@ -302,7 +302,7 @@ POST /api/orders
 
 ```txt
 settlementDate는 YYYY-MM-DD 형식이어야 한다.
-processingStrategy는 BASIC_LOOP, GROUP_BY_QUERY, BULK_SAVE, INDEX_APPLIED 중 하나여야 한다.
+processingStrategy는 BASIC_LOOP, GROUP_BY_QUERY, GROUP_BY_BULK_SAVE, GROUP_BY_BULK_INDEX 중 하나여야 한다.
 pageSize는 상한선을 둔다.
 ```
 

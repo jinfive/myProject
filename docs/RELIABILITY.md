@@ -172,6 +172,8 @@
 - 실패 시 BatchJobHistory 상태를 `FAILED`로 기록한다.
 - 실패 원인을 `error_message` 또는 `SettlementError`에 기록한다.
 - 실패 후 재실행 가능 여부를 판단할 수 있어야 한다.
+- BatchJobHistory 상태 check constraint는 `RUNNING`, `SUCCESS`, `FAILED`를 모두 허용해야 한다.
+- 기존 로컬 DB의 check constraint가 새 enum 값을 허용하지 않는 경우 이력을 삭제하지 않고 제약조건만 갱신한다.
 
 ---
 
@@ -214,6 +216,9 @@
 - 같은 로컬 환경과 같은 DB 설정에서 비교한다.
 - BatchJobHistory에 실행 시간을 기록한다.
 - README와 PPT에는 실제 측정값만 반영한다.
+- 로컬 벤치마크에서는 기존 Payment를 재사용하고 날짜만 오늘로 벌크 동기화해 실험 조건을 유지한다.
+- Payment 날짜를 동기화할 때는 원천 데이터와 맞지 않는 기존 Settlement를 삭제하고, BatchJobHistory는 실행 이력이므로 보존한다.
+- 날짜 동기화 기능은 운영 기능이 아니라 개발용 기능이며 설정으로 비활성화할 수 있어야 한다.
 
 ---
 
@@ -354,6 +359,9 @@ ExecutionEvent 발행
 - 초기 MVP에서는 같은 조건의 중복 실행을 거부한다.
 - 이후 재실행 기능이 필요하면 기존 결과 삭제 후 재생성 또는 실패 건 재처리를 검토한다.
 - 성능 비교를 위해 `merchant_id + settlement_date + processing_strategy` 기준으로 중복을 관리한다.
+- 중복 여부는 실패 이력이 아니라 Settlement 결과 존재 여부를 기준으로 판단한다.
+- 배치 이력은 정산 트랜잭션과 분리해 `RUNNING`, `SUCCESS`, `FAILED`와 실패 원인을 남긴다.
+- 정산 처리 중 실패하면 Settlement 결과는 전체 롤백하고, BatchJobHistory의 실패 이력은 보존한다.
 
 ---
 
@@ -696,14 +704,17 @@ account_id + stock_id
 ```txt
 BASIC_LOOP
 GROUP_BY_QUERY
-BULK_SAVE
-INDEX_APPLIED
+GROUP_BY_BULK_SAVE
+GROUP_BY_BULK_INDEX
 ```
 
 원칙:
 
 - 같은 데이터 건수로 비교한다.
 - 같은 정산일자로 비교한다.
+- BASIC_LOOP는 실무 적용 방식이 아니라 성능 개선 전 기준선을 만들기 위해 의도적으로 구현한 방식이다.
+- 실무 정산 배치라면 전체 Payment 데이터를 애플리케이션으로 가져오는 방식보다 DB GROUP BY 집계가 더 적절하다.
+- 로컬 벤치마크 데이터 날짜 동기화는 Payment 전체를 Entity List로 로딩하지 않고 벌크 update/delete로 처리한다.
 - 같은 DB 설정에서 비교한다.
 - 실행 시간을 BatchJobHistory에 기록한다.
 - 성능 개선 후에도 정산 결과가 동일한지 검증한다.

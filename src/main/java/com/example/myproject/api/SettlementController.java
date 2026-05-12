@@ -34,6 +34,7 @@ public class SettlementController {
     ) {
         SettlementRunResult result = settlementService.run(date, strategy);
         return SettlementSummaryResponse.of(
+                strategy,
                 result.batchJobHistory().getProcessedCount(),
                 result.batchJobHistory().getElapsedMs(),
                 result.settlements()
@@ -42,18 +43,20 @@ public class SettlementController {
 
     @GetMapping("/settlements")
     public SettlementSummaryResponse getSettlements(
-            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
+            @RequestParam(required = false) SettlementStrategy strategy
     ) {
-        List<Settlement> settlements = settlementService.getSettlements(date);
+        List<Settlement> settlements = settlementService.getSettlements(date, strategy);
         BatchJobHistory latestHistory = settlementService.getBatchHistories()
                 .stream()
                 .filter(history -> history.getSettlementDate().equals(date))
+                .filter(history -> strategy == null || history.getStrategy() == strategy)
                 .findFirst()
                 .orElse(null);
 
         long processedCount = latestHistory == null ? 0 : latestHistory.getProcessedCount();
         long elapsedMs = latestHistory == null ? 0 : latestHistory.getElapsedMs();
-        return SettlementSummaryResponse.of(processedCount, elapsedMs, settlements);
+        return SettlementSummaryResponse.of(strategy, processedCount, elapsedMs, settlements);
     }
 
     @GetMapping("/batch-histories")

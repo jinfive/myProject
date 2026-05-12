@@ -190,14 +190,14 @@
 | ------ | ------------------------------------------- | ------- | ---- | ------ | --- | ---------- | ------ |
 | TD-001 | `application.yml`과 `compose.yaml` DB 설정 불일치 | Open    | P1   | High   | TBD | 2026-05-11 | TBD    |
 | TD-002 | 핵심 정산 계산 테스트 부족                             | Open    | P1   | High   | TBD | 2026-05-11 | TBD    |
-| TD-003 | 중복 정산 방지 테스트 부족                             | Open    | P1   | High   | TBD | 2026-05-11 | TBD    |
+| TD-003 | 중복 정산 방지 테스트 부족                             | Resolved | P1   | High   | TBD | 2026-05-11 | 2026-05-12 |
 | TD-004 | GROUP BY 기반 정산 개선 전략 미구현                    | Open    | P1   | High   | TBD | 2026-05-11 | TBD    |
 | TD-005 | 벌크 저장 최적화 미구현                               | Open    | P1   | High   | TBD | 2026-05-11 | TBD    |
 | TD-006 | 인덱스 적용 및 성능 비교 미구현                          | Open    | P1   | High   | TBD | 2026-05-11 | TBD    |
 | TD-007 | 실제 테이블 기준 DB 문서 미갱신                         | Open    | P2   | Medium | TBD | 2026-05-11 | TBD    |
-| TD-008 | 배치 실패 이력과 재실행 정책 부족                         | Open    | P1   | High   | TBD | 2026-05-11 | TBD    |
+| TD-008 | 배치 실패 이력과 재실행 정책 부족                         | In Progress | P1   | High   | TBD | 2026-05-11 | TBD    |
 | TD-009 | 성능 비교 결과 문서화 부족                             | Open    | P1   | High   | TBD | 2026-05-11 | TBD    |
-| TD-010 | 정산 처리 전략 구조 분리 부족                           | Open    | P2   | Medium | TBD | 2026-05-11 | TBD    |
+| TD-010 | 정산 처리 전략 구조 분리 부족                           | In Progress | P2   | Medium | TBD | 2026-05-11 | TBD    |
 | TD-011 | 프론트엔드 대시보드 구조가 단일 파일 중심                     | Open    | P3   | Low    | TBD | 2026-05-11 | TBD    |
 | TD-012 | 공통 예외 응답 구조 부족                              | Open    | P2   | Medium | TBD | 2026-05-11 | TBD    |
 | TD-013 | 2단계 증권 실시간 시세 API 연동 설계 미작성                 | Planned | P2   | Medium | TBD | 2026-05-11 | TBD    |
@@ -206,6 +206,121 @@
 | TD-016 | 2단계 체결 결과와 잔고/예수금 정합성 설계 미작성                | Planned | P2   | High   | TBD | 2026-05-11 | TBD    |
 | TD-017 | 2단계 WebSocket 체결 알림 설계 미작성                  | Planned | P3   | Medium | TBD | 2026-05-11 | TBD    |
 | TD-018 | 2단계 대량 주문 성능 테스트 설계 미작성                     | Planned | P2   | Medium | TBD | 2026-05-11 | TBD    |
+| TD-019 | 로컬 벤치마크 데이터 날짜 동기화 운영 오용 방지                  | In Progress | P2   | Medium | TBD | 2026-05-12 | TBD    |
+| TD-020 | 로컬 DB check constraint와 enum 값 불일치                  | Resolved | P1   | High   | TBD | 2026-05-12 | 2026-05-12 |
+
+---
+
+## TD-019: 로컬 벤치마크 데이터 날짜 동기화 운영 오용 방지
+
+### 상태
+
+In Progress
+
+### 우선순위
+
+P2
+
+### 영향도
+
+Medium
+
+### 관련 단계
+
+* 1단계 배치
+
+### 관련 영역
+
+* Backend
+* Reliability
+* Performance
+* Documentation
+
+### 관련 파일
+
+* `src/main/java/com/example/myproject/data/BenchmarkDataDateSyncService.java`
+* `src/main/java/com/example/myproject/data/DummyDataRunner.java`
+* `src/main/resources/application.yml`
+
+### 문제
+
+대용량 성능 비교를 반복하기 위해 매번 Payment 데이터를 새로 생성하면 시간이 오래 걸리고 실험 조건도 달라질 수 있다.
+
+반대로 기존 Payment 날짜를 자동으로 바꾸는 기능은 운영 환경에서 사용되면 원천 거래 데이터 의미를 훼손할 수 있다.
+
+### 해결 방향
+
+로컬 벤치마크 환경에서는 기존 Payment 데이터를 재사용하되, 정산 기준일만 오늘 날짜로 동기화한다.
+
+이미 모든 Payment가 오늘 날짜이면 아무 작업도 하지 않고, 날짜가 다를 때만 기존 settlements를 삭제한 뒤 Payment 날짜를 오늘로 일괄 변경한다.
+
+batch_job_histories는 실행 이력이므로 삭제하지 않고 보존한다.
+
+이 기능은 운영 기능이 아니라 개발용 기능이며 `benchmark.data-date-sync-enabled` 설정으로 제어한다.
+
+### 완료 기준
+
+* [x] Payment 전체를 Entity List로 로딩하지 않는다.
+* [x] Payment 날짜 변경은 벌크 update로 처리한다.
+* [x] Settlement 삭제는 벌크 delete로 처리한다.
+* [x] BatchJobHistory는 삭제하지 않는다.
+* [x] 실행 여부와 변경 건수를 로그로 남긴다.
+* [x] 설정값으로 켜고 끌 수 있다.
+* [x] 정책 테스트가 추가되었다.
+* [ ] 운영/배포 프로파일이 생기면 기본 비활성화 여부를 별도 검토한다.
+
+### 메모
+
+이를 통해 같은 데이터 규모와 조건에서 BASIC_LOOP, GROUP_BY_QUERY, GROUP_BY_BULK_SAVE, GROUP_BY_BULK_INDEX 전략을 반복 비교할 수 있다.
+
+---
+
+## TD-020: 로컬 DB check constraint와 enum 값 불일치
+
+### 상태
+
+Resolved
+
+### 우선순위
+
+P1
+
+### 영향도
+
+High
+
+### 관련 단계
+
+* 1단계 배치
+
+### 관련 영역
+
+* Backend
+* Database
+* Reliability
+
+### 문제
+
+BatchJobHistory에 `RUNNING` 상태가 추가되었지만, 기존 로컬 PostgreSQL DB의 `batch_job_histories_status_check` 제약조건이 `RUNNING` 값을 허용하지 않아 정산 실행 시 시작 이력 저장이 실패할 수 있다.
+
+Hibernate `ddl-auto=update`는 기존 check constraint를 안전하게 갱신하지 못할 수 있다.
+
+### 해결 방향
+
+`RUNNING` 상태와 시작 이력 저장 흐름은 유지한다.
+
+기존 batch_job_histories 데이터는 삭제하지 않고, 로컬 스키마 보정 러너와 수동 SQL 문서에서 기존 status check constraint를 제거한 뒤 `RUNNING`, `SUCCESS`, `FAILED`를 허용하는 새 check constraint를 추가한다.
+
+processing_strategy check constraint도 현재 enum 값인 `BASIC_LOOP`, `GROUP_BY_QUERY`, `GROUP_BY_BULK_SAVE`, `GROUP_BY_BULK_INDEX`와 일치하도록 갱신한다.
+
+### 완료 기준
+
+* [x] BatchJobStatus.RUNNING은 유지한다.
+* [x] batch_job_histories 데이터는 삭제하지 않는다.
+* [x] status check constraint가 RUNNING, SUCCESS, FAILED를 허용하도록 보정된다.
+* [x] processing_strategy check constraint가 현재 enum 값과 일치하도록 보정된다.
+* [x] 수동 확인 SQL과 마이그레이션 SQL을 문서화했다.
+* [x] `./gradlew test`가 통과한다.
 
 ---
 
@@ -218,7 +333,7 @@
 
 ### 상태
 
-Open
+Resolved
 
 ### 우선순위
 
@@ -555,7 +670,7 @@ TBD
 권장 방향:
 
 ```txt
-1. SettlementRepository에서 merchant + settlementDate 기준 중복 여부 확인
+1. SettlementRepository에서 settlementDate + processingStrategy 기준 중복 여부 확인
 2. DB unique constraint 적용 검토
 3. 중복 실행 시 기존 결과 삭제 후 재생성 또는 실행 거부 정책 결정
 4. 정책에 맞는 테스트 추가
@@ -563,15 +678,15 @@ TBD
 
 ### 완료 기준
 
-* [ ] 중복 정산 정책이 문서화되었다.
-* [ ] 중복 정산 방지 로직이 구현되었다.
-* [ ] 같은 정산일자를 두 번 실행하는 테스트가 추가되었다.
-* [ ] DB 제약조건 적용 여부가 결정되었다.
-* [ ] `./gradlew test`가 통과한다.
+* [x] 중복 정산 정책이 문서화되었다.
+* [x] 중복 정산 방지 로직이 구현되었다.
+* [x] 같은 정산일자와 같은 전략을 두 번 실행하는 테스트가 추가되었다.
+* [x] DB 제약조건 적용 여부가 결정되었다.
+* [x] `./gradlew test`가 통과한다.
 
 ### 메모
 
-재실행 정책과 함께 설계해야 한다.
+2026-05-12에 중복 기준을 `merchant_id + settlement_date + processing_strategy`로 변경하고, 같은 날짜의 다른 전략 저장 허용과 같은 전략 중복 저장 차단 테스트를 추가했다.
 
 ---
 
@@ -579,7 +694,7 @@ TBD
 
 ### 상태
 
-Open
+In Progress
 
 ### 우선순위
 
@@ -705,7 +820,7 @@ TBD
 
 정산 결과 저장 시 개별 저장이 반복되면 데이터가 많아질수록 DB 저장 호출이 많아질 수 있다.
 
-현재 벌크 저장 최적화가 별도 전략으로 구현되어 있지 않다.
+현재 벌크 저장 최적화가 GROUP BY 이후 단계형 전략으로 구현되어 있지 않다.
 
 ### 영향
 
@@ -715,7 +830,7 @@ TBD
 
 ### 해결 방향
 
-BULK_SAVE 전략을 추가한다.
+GROUP_BY_BULK_SAVE 전략을 추가한다.
 
 권장 구현 방향:
 
@@ -723,12 +838,12 @@ BULK_SAVE 전략을 추가한다.
 1. 정산 결과를 List<Settlement>로 생성
 2. 반복 save 대신 saveAll 적용
 3. 필요 시 Hibernate batch insert 설정 검토
-4. BASIC_LOOP, GROUP_BY_QUERY와 처리 시간 비교
+4. BASIC_LOOP, GROUP_BY_QUERY, GROUP_BY_BULK_SAVE와 처리 시간 비교
 ```
 
 ### 완료 기준
 
-* [ ] BULK_SAVE 전략이 구현되었다.
+* [ ] GROUP_BY_BULK_SAVE 전략이 구현되었다.
 * [ ] Settlement 저장 방식이 일괄 저장으로 개선되었다.
 * [ ] 처리 시간이 BatchJobHistory에 기록된다.
 * [ ] 기존 결과와 금액이 동일한지 테스트 또는 수동 검증했다.
@@ -995,15 +1110,15 @@ TBD
 
 ### 완료 기준
 
-* [ ] 배치 실패 상태가 BatchJobHistory에 기록된다.
-* [ ] 실패 원인이 저장된다.
-* [ ] 재실행 정책이 문서화되었다.
-* [ ] 중복 정산 방지 정책과 충돌하지 않는다.
-* [ ] 실패 케이스 테스트 또는 수동 검증이 완료되었다.
+* [x] 배치 실패 상태가 BatchJobHistory에 기록된다.
+* [x] 실패 원인이 저장된다.
+* [x] MVP 재실행 정책이 문서화되었다.
+* [x] 중복 정산 방지 정책과 충돌하지 않는다.
+* [x] 실패 케이스 테스트 또는 수동 검증이 완료되었다.
 
 ### 메모
 
-금융권 포트폴리오에서 안정성을 보여주는 핵심 항목이다.
+2026-05-12에 BatchJobHistory를 별도 트랜잭션으로 분리해 `RUNNING`, `SUCCESS`, `FAILED`와 `errorMessage`를 보존하도록 개선했다. 부분 실패 처리, 실패 건 재처리, 강제 재실행 기능은 이번 MVP 범위에서 제외하고 향후 작업으로 남긴다.
 
 ---
 
@@ -1011,7 +1126,7 @@ TBD
 
 ### 상태
 
-Open
+In Progress
 
 ### 우선순위
 
@@ -1070,16 +1185,16 @@ TBD
 |---|---:|---:|---|
 | BASIC_LOOP | 100,000건 | 측정값 | 전체 조회 후 Java 반복문 집계 |
 | GROUP_BY_QUERY | 100,000건 | 측정값 | DB GROUP BY 집계 |
-| BULK_SAVE | 100,000건 | 측정값 | 정산 결과 일괄 저장 |
-| INDEX_APPLIED | 100,000건 | 측정값 | 조회 조건 인덱스 적용 |
+| GROUP_BY_BULK_SAVE | 100,000건 | 측정값 | DB GROUP BY 집계 + 정산 결과 일괄 저장 |
+| GROUP_BY_BULK_INDEX | 100,000건 | 측정값 | DB GROUP BY 집계 + 일괄 저장 + 조회 조건 인덱스 적용 |
 ```
 
 ### 완료 기준
 
 * [ ] BASIC_LOOP 처리 시간이 기록되었다.
 * [ ] GROUP_BY_QUERY 처리 시간이 기록되었다.
-* [ ] BULK_SAVE 처리 시간이 기록되었다.
-* [ ] INDEX_APPLIED 처리 시간이 기록되었다.
+* [ ] GROUP_BY_BULK_SAVE 처리 시간이 기록되었다.
+* [ ] GROUP_BY_BULK_INDEX 처리 시간이 기록되었다.
 * [ ] README에 성능 개선 표가 추가되었다.
 * [ ] PPT 제작용 요약 문장이 작성되었다.
 
@@ -1133,7 +1248,7 @@ TBD
 
 현재는 BASIC_LOOP 정산 서비스 중심으로 구현되어 있다.
 
-향후 GROUP_BY_QUERY, BULK_SAVE, INDEX_APPLIED 전략을 추가하면 하나의 서비스에 로직이 과도하게 몰릴 수 있다.
+향후 GROUP_BY_QUERY, GROUP_BY_BULK_SAVE, GROUP_BY_BULK_INDEX 전략을 추가하면 하나의 서비스에 로직이 과도하게 몰릴 수 있다.
 
 ### 영향
 
@@ -1152,18 +1267,18 @@ settlement/strategy
 ├── SettlementStrategy.java
 ├── BasicLoopSettlementStrategy.java
 ├── GroupByQuerySettlementStrategy.java
-├── BulkSaveSettlementStrategy.java
-└── IndexAppliedSettlementStrategy.java
+├── GroupByBulkSaveSettlementStrategy.java
+└── GroupByBulkIndexSettlementStrategy.java
 ```
 
 ### 완료 기준
 
-* [ ] 처리 전략 Enum이 정의되었다.
+* [x] 처리 전략 Enum이 정의되었다.
 * [ ] 공통 Strategy 인터페이스가 정의되었다.
-* [ ] BASIC_LOOP 전략이 분리되었다.
+* [x] BASIC_LOOP 처리 processor가 분리되었다.
 * [ ] GROUP_BY_QUERY 전략이 분리되었다.
-* [ ] API에서 처리 전략을 선택할 수 있다.
-* [ ] 전략별 실행 시간이 기록된다.
+* [x] API에서 처리 전략을 선택할 수 있다.
+* [x] 전략별 실행 시간이 기록된다.
 
 ### 메모
 
@@ -2028,5 +2143,3 @@ AI 에이전트가 작업 중 기술부채를 발견하면 다음을 따른다.
 * 완료된 항목도 삭제하지 않고 이력으로 보관한다.
 * 1단계는 금융권 공통 역량을 보여준다.
 * 2단계는 증권사 특화 역량을 보여준다.
-
-

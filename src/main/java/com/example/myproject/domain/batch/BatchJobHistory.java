@@ -23,16 +23,14 @@ public class BatchJobHistory {
     private LocalDate settlementDate;
 
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false, length = 30)
+    @Column(name = "processing_strategy", nullable = false, length = 30, columnDefinition = "varchar(30) default 'BASIC_LOOP'")
     private SettlementStrategy strategy;
 
     @Column(nullable = false)
     private LocalDateTime startedAt;
 
-    @Column(nullable = false)
     private LocalDateTime endedAt;
 
-    @Column(nullable = false)
     private long elapsedMs;
 
     @Column(nullable = false)
@@ -48,6 +46,9 @@ public class BatchJobHistory {
     @Column(nullable = false, length = 20)
     private BatchJobStatus status;
 
+    @Column(length = 1000)
+    private String errorMessage;
+
     protected BatchJobHistory() {
     }
 
@@ -60,7 +61,8 @@ public class BatchJobHistory {
             long processedCount,
             long successCount,
             long failureCount,
-            BatchJobStatus status
+            BatchJobStatus status,
+            String errorMessage
     ) {
         this.settlementDate = settlementDate;
         this.strategy = strategy;
@@ -71,6 +73,40 @@ public class BatchJobHistory {
         this.successCount = successCount;
         this.failureCount = failureCount;
         this.status = status;
+        this.errorMessage = errorMessage;
+    }
+
+    public static BatchJobHistory running(LocalDate settlementDate, SettlementStrategy strategy, LocalDateTime startedAt) {
+        return new BatchJobHistory(
+                settlementDate,
+                strategy,
+                startedAt,
+                null,
+                0,
+                0,
+                0,
+                0,
+                BatchJobStatus.RUNNING,
+                null
+        );
+    }
+
+    public void markSuccess(LocalDateTime endedAt, long processedCount, long successCount) {
+        this.endedAt = endedAt;
+        this.elapsedMs = java.time.Duration.between(startedAt, endedAt).toMillis();
+        this.processedCount = processedCount;
+        this.successCount = successCount;
+        this.failureCount = 0;
+        this.status = BatchJobStatus.SUCCESS;
+        this.errorMessage = null;
+    }
+
+    public void markFailed(LocalDateTime endedAt, String errorMessage) {
+        this.endedAt = endedAt;
+        this.elapsedMs = java.time.Duration.between(startedAt, endedAt).toMillis();
+        this.failureCount = 1;
+        this.status = BatchJobStatus.FAILED;
+        this.errorMessage = errorMessage;
     }
 
     public Long getId() {
@@ -111,5 +147,9 @@ public class BatchJobHistory {
 
     public BatchJobStatus getStatus() {
         return status;
+    }
+
+    public String getErrorMessage() {
+        return errorMessage;
     }
 }

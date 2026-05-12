@@ -4,7 +4,7 @@ import axios from 'axios';
 import './styles.css';
 
 const API_BASE_URL = 'http://localhost:8080/api';
-const strategies = ['BASIC_LOOP'];
+const strategies = ['BASIC_LOOP', 'GROUP_BY_QUERY', 'GROUP_BY_BULK_SAVE', 'GROUP_BY_BULK_INDEX'];
 
 const emptySummary = {
   processedCount: 0,
@@ -39,9 +39,9 @@ function App() {
 
   const lastRun = histories[0];
 
-  const fetchSettlements = async (date) => {
+  const fetchSettlements = async (date, selectedStrategy) => {
     const response = await axios.get(`${API_BASE_URL}/settlements`, {
-      params: { date },
+      params: { date, strategy: selectedStrategy },
     });
     setSummary(response.data);
   };
@@ -51,15 +51,15 @@ function App() {
     setHistories(response.data);
   };
 
-  const refreshDashboard = async (date) => {
-    await Promise.all([fetchSettlements(date), fetchHistories()]);
+  const refreshDashboard = async (date, selectedStrategy) => {
+    await Promise.all([fetchSettlements(date, selectedStrategy), fetchHistories()]);
   };
 
   useEffect(() => {
-    refreshDashboard(settlementDate).catch(() => {
+    refreshDashboard(settlementDate, strategy).catch(() => {
       setErrorMessage('대시보드 데이터를 불러오지 못했습니다. 백엔드 서버 상태를 확인하세요.');
     });
-  }, [settlementDate]);
+  }, [settlementDate, strategy]);
 
   const handleRun = async () => {
     setIsRunning(true);
@@ -77,15 +77,15 @@ function App() {
     } catch (error) {
       const message = error.response?.data?.message ?? '정산 배치 실행 중 오류가 발생했습니다.';
       setErrorMessage(message);
-      await refreshDashboard(settlementDate).catch(() => undefined);
+      await refreshDashboard(settlementDate, strategy).catch(() => undefined);
     } finally {
       setIsRunning(false);
     }
   };
 
   const elapsedRows = useMemo(
-    () => histories.filter((history) => history.strategy === 'BASIC_LOOP').slice(0, 5),
-    [histories],
+    () => histories.filter((history) => history.strategy === strategy).slice(0, 5),
+    [histories, strategy],
   );
 
   return (
@@ -96,7 +96,7 @@ function App() {
             <p className="text-sm font-semibold text-accent">Settlement Performance</p>
             <h1 className="text-2xl font-semibold tracking-normal text-ink">정산 성능 대시보드</h1>
             <p className="max-w-3xl text-sm leading-6 text-muted">
-              BASIC_LOOP 방식의 일별 정산 배치를 실행하고 성능 개선 전 기준 처리 시간을 확인합니다.
+              BASIC_LOOP 기준선과 단계형 개선 전략별 정산 결과, 실행 이력, 처리 시간을 비교합니다.
             </p>
           </div>
 
@@ -162,7 +162,7 @@ function App() {
           <MetricCard label="총 취소금액" value={formatWon(summary.totalCancelAmount)} />
           <MetricCard label="총 수수료" value={formatWon(summary.totalFeeAmount)} />
           <MetricCard label="총 정산금액" value={formatWon(summary.totalSettlementAmount)} strong />
-          <MetricCard label="BASIC_LOOP 처리 시간" value={formatMs(summary.elapsedMs)} accent />
+          <MetricCard label={`${strategy} 처리 시간`} value={formatMs(summary.elapsedMs)} accent />
         </section>
 
         <section className="grid gap-6 xl:grid-cols-[1fr_420px]">
@@ -172,6 +172,7 @@ function App() {
                 <thead className="bg-slate-100 text-xs font-semibold uppercase text-muted">
                   <tr>
                     <Th>가맹점명</Th>
+                    <Th>처리 전략</Th>
                     <Th align="right">총 결제금액</Th>
                     <Th align="right">총 취소금액</Th>
                     <Th align="right">순매출</Th>
@@ -183,7 +184,7 @@ function App() {
                 <tbody className="divide-y divide-line">
                   {summary.settlements.length === 0 ? (
                     <tr className="bg-white">
-                      <td className="px-4 py-8 text-center text-muted" colSpan="7">
+                      <td className="px-4 py-8 text-center text-muted" colSpan="8">
                         선택한 날짜의 정산 결과가 없습니다.
                       </td>
                     </tr>
@@ -191,6 +192,7 @@ function App() {
                     summary.settlements.map((row) => (
                       <tr key={row.id} className="bg-white">
                         <Td strong>{row.merchantName}</Td>
+                        <Td>{row.strategy}</Td>
                         <Td align="right">{formatWon(row.totalPaymentAmount)}</Td>
                         <Td align="right">{formatWon(row.totalCancelAmount)}</Td>
                         <Td align="right">{formatWon(row.netSalesAmount)}</Td>
@@ -207,9 +209,9 @@ function App() {
             </div>
           </DataPanel>
 
-          <DataPanel title="BASIC_LOOP 처리 시간">
+          <DataPanel title={`${strategy} 처리 시간`}>
             {elapsedRows.length === 0 ? (
-              <p className="text-sm text-muted">아직 BASIC_LOOP 실행 이력이 없습니다.</p>
+              <p className="text-sm text-muted">아직 선택한 전략의 실행 이력이 없습니다.</p>
             ) : (
               <div className="space-y-4">
                 {elapsedRows.map((item) => {
@@ -245,12 +247,13 @@ function App() {
                   <Th align="right">실패 건수</Th>
                   <Th align="right">실행 시간</Th>
                   <Th>상태</Th>
+                  <Th>실패 원인</Th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
                 {histories.length === 0 ? (
                   <tr className="bg-white">
-                    <td className="px-4 py-8 text-center text-muted" colSpan="8">
+                    <td className="px-4 py-8 text-center text-muted" colSpan="9">
                       배치 실행 이력이 없습니다.
                     </td>
                   </tr>
@@ -267,10 +270,11 @@ function App() {
                         {formatMs(row.elapsedMs)}
                       </Td>
                       <Td>
-                        <span className="rounded-full bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700">
+                        <span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClassName(row.status)}`}>
                           {row.status}
                         </span>
                       </Td>
+                      <Td>{row.errorMessage ?? '-'}</Td>
                     </tr>
                   ))
                 )}
@@ -281,6 +285,16 @@ function App() {
       </div>
     </main>
   );
+}
+
+function statusClassName(status) {
+  if (status === 'SUCCESS') {
+    return 'bg-emerald-50 text-emerald-700';
+  }
+  if (status === 'FAILED') {
+    return 'bg-rose-50 text-rose-700';
+  }
+  return 'bg-sky-50 text-sky-700';
 }
 
 function formatDateTime(value) {
