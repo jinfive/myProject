@@ -41,7 +41,7 @@
 2단계: 실시간 주식 시세 API 기반 모의 주문·체결 처리 시스템
 ```
 
-현재는 1단계인 **정산 배치 성능 비교용 MVP 중 BASIC_LOOP 기준선 구현 완료** 단계이다.
+현재는 1단계인 **정산 배치 성능 비교용 MVP 중 GROUP_BY_QUERY 구현 완료** 단계이다.
 
 현재 구현된 기능:
 
@@ -52,6 +52,7 @@
     - 결제 데이터 100,000건
     - 특정일 거래 약 70,000건
 - BASIC_LOOP 정산 배치 구현
+- GROUP_BY_QUERY 정산 배치 구현
 - 정산 실행 API 구현
     - `POST /api/settlements/run`
 - 정산 결과 조회 API 구현
@@ -67,7 +68,7 @@
 - `application.yml`과 `compose.yaml`의 DB 설정 불일치
 - 정산 계산 테스트 부족
 - 중복 정산 방지 테스트 부족
-- GROUP BY, 벌크 저장, 인덱스 적용 후 결과 정합성 검증 미구현
+- 벌크 저장, 인덱스 적용 후 결과 정합성 검증 미구현
 - 실패 배치 이력 저장 부족
 - 재실행 정책 부족
 - 대사 기능 미구현
@@ -641,12 +642,12 @@ WEBSOCKET_DISCONNECTED
 1단계 검토 인덱스:
 
 ```txt
-payment_date
+transaction_date
 merchant_id
-payment_status
-payment_type
-payment_date + merchant_id
-payment_date + merchant_id + payment_type
+status
+type
+transaction_date + merchant_id
+transaction_date + merchant_id + type
 settlement_date + processing_strategy
 merchant_id + settlement_date + processing_strategy
 ```
@@ -714,6 +715,8 @@ GROUP_BY_BULK_INDEX
 - 같은 정산일자로 비교한다.
 - BASIC_LOOP는 실무 적용 방식이 아니라 성능 개선 전 기준선을 만들기 위해 의도적으로 구현한 방식이다.
 - 실무 정산 배치라면 전체 Payment 데이터를 애플리케이션으로 가져오는 방식보다 DB GROUP BY 집계가 더 적절하다.
+- GROUP_BY_QUERY는 Payment 전체 Entity 목록을 애플리케이션으로 로딩하지 않고, DB GROUP BY 결과만 받아 BASIC_LOOP와 같은 계산식과 반올림 정책으로 정산금액을 계산한다.
+- GROUP_BY_QUERY 단계에서는 개선 효과를 분리하기 위해 Settlement 저장 방식을 개별 저장으로 유지한다.
 - 로컬 벤치마크 데이터 날짜 동기화는 Payment 전체를 Entity List로 로딩하지 않고 벌크 update/delete로 처리한다.
 - 같은 DB 설정에서 비교한다.
 - 실행 시간을 BatchJobHistory에 기록한다.

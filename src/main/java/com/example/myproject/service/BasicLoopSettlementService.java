@@ -18,28 +18,32 @@ public class BasicLoopSettlementService {
     private final SettlementRepository settlementRepository;
     private final BatchJobHistoryService batchJobHistoryService;
     private final BasicLoopSettlementProcessor basicLoopSettlementProcessor;
+    private final GroupBySettlementProcessor groupBySettlementProcessor;
 
     public BasicLoopSettlementService(
             BatchJobHistoryRepository batchJobHistoryRepository,
             SettlementRepository settlementRepository,
             BatchJobHistoryService batchJobHistoryService,
-            BasicLoopSettlementProcessor basicLoopSettlementProcessor
+            BasicLoopSettlementProcessor basicLoopSettlementProcessor,
+            GroupBySettlementProcessor groupBySettlementProcessor
     ) {
         this.batchJobHistoryRepository = batchJobHistoryRepository;
         this.settlementRepository = settlementRepository;
         this.batchJobHistoryService = batchJobHistoryService;
         this.basicLoopSettlementProcessor = basicLoopSettlementProcessor;
+        this.groupBySettlementProcessor = groupBySettlementProcessor;
     }
 
     public SettlementRunResult run(LocalDate settlementDate, SettlementStrategy strategy) {
-        if (strategy != SettlementStrategy.BASIC_LOOP) {
+        if (strategy == SettlementStrategy.GROUP_BY_BULK_SAVE
+                || strategy == SettlementStrategy.GROUP_BY_BULK_INDEX) {
             throw new IllegalArgumentException(strategy + " strategy is not implemented yet.");
         }
 
         LocalDateTime startedAt = LocalDateTime.now();
         BatchJobHistory history = batchJobHistoryService.start(settlementDate, strategy, startedAt);
         try {
-            SettlementProcessResult processResult = basicLoopSettlementProcessor.run(settlementDate);
+            SettlementProcessResult processResult = runProcessor(settlementDate, strategy);
             BatchJobHistory successHistory = batchJobHistoryService.markSuccess(
                     history.getId(),
                     LocalDateTime.now(),
@@ -51,6 +55,16 @@ public class BasicLoopSettlementService {
             batchJobHistoryService.markFailed(history.getId(), LocalDateTime.now(), exception.getMessage());
             throw exception;
         }
+    }
+
+    private SettlementProcessResult runProcessor(LocalDate settlementDate, SettlementStrategy strategy) {
+        if (strategy == SettlementStrategy.BASIC_LOOP) {
+            return basicLoopSettlementProcessor.run(settlementDate);
+        }
+        if (strategy == SettlementStrategy.GROUP_BY_QUERY) {
+            return groupBySettlementProcessor.run(settlementDate);
+        }
+        throw new IllegalArgumentException(strategy + " strategy is not implemented yet.");
     }
 
     @Transactional(readOnly = true)

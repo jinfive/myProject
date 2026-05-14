@@ -4,7 +4,12 @@ import axios from 'axios';
 import './styles.css';
 
 const API_BASE_URL = 'http://localhost:8080/api';
-const strategies = ['BASIC_LOOP', 'GROUP_BY_QUERY', 'GROUP_BY_BULK_SAVE', 'GROUP_BY_BULK_INDEX'];
+const strategyOptions = [
+  { value: 'BASIC_LOOP', label: 'BASIC_LOOP', implemented: true },
+  { value: 'GROUP_BY_QUERY', label: 'GROUP_BY_QUERY', implemented: true },
+  { value: 'GROUP_BY_BULK_SAVE', label: 'GROUP_BY_BULK_SAVE - 아직 미구현', implemented: false },
+  { value: 'GROUP_BY_BULK_INDEX', label: 'GROUP_BY_BULK_INDEX - 아직 미구현', implemented: false },
+];
 
 const emptySummary = {
   processedCount: 0,
@@ -38,6 +43,8 @@ function App() {
   const [errorMessage, setErrorMessage] = useState('');
 
   const lastRun = histories[0];
+  const selectedStrategy = strategyOptions.find((item) => item.value === strategy);
+  const isStrategyImplemented = selectedStrategy?.implemented ?? false;
 
   const fetchSettlements = async (date, selectedStrategy) => {
     const response = await axios.get(`${API_BASE_URL}/settlements`, {
@@ -64,6 +71,12 @@ function App() {
   const handleRun = async () => {
     setIsRunning(true);
     setErrorMessage('');
+
+    if (!isStrategyImplemented) {
+      setErrorMessage(`${strategy} 전략은 아직 구현되지 않았습니다.`);
+      setIsRunning(false);
+      return;
+    }
 
     try {
       const response = await axios.post(`${API_BASE_URL}/settlements/run`, null, {
@@ -118,9 +131,9 @@ function App() {
                 value={strategy}
                 onChange={(event) => setStrategy(event.target.value)}
               >
-                {strategies.map((item) => (
-                  <option key={item} value={item}>
-                    {item}
+                {strategyOptions.map((item) => (
+                  <option key={item.value} value={item.value} disabled={!item.implemented}>
+                    {item.label}
                   </option>
                 ))}
               </select>
@@ -141,7 +154,7 @@ function App() {
               className="h-11 self-end rounded-md bg-accent px-5 text-sm font-semibold text-white hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-slate-400"
               type="button"
               onClick={handleRun}
-              disabled={isRunning}
+              disabled={isRunning || !isStrategyImplemented}
             >
               {isRunning ? '정산 실행 중...' : '정산 배치 실행'}
             </button>

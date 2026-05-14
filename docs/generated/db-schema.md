@@ -16,7 +16,7 @@
 - 1단계 배치 정산 성능 개선 테이블
 - 2단계 증권 실시간 주문·체결 처리 확장 테이블
 
-현재는 1단계인 **정산 배치 성능 비교용 MVP 중 BASIC_LOOP 기준선 구현 완료** 상태이다.
+현재는 1단계인 **정산 배치 성능 비교용 MVP 중 GROUP_BY_QUERY 구현 완료** 상태이다.
 
 현재 구현된 핵심 도메인은 다음과 같다.
 
@@ -80,7 +80,7 @@
 → 어떻게 검증할 것인가
 ```
 
-예를 들어 `payments.payment_date` 인덱스는 단순히 조회를 빠르게 하기 위한 것이 아니라, 다음 문제를 해결하기 위한 구조이다.
+예를 들어 `payments.transaction_date` 인덱스는 단순히 조회를 빠르게 하기 위한 것이 아니라, 다음 문제를 해결하기 위한 구조이다.
 
 ```txt
 문제:
@@ -90,7 +90,7 @@
 정산일자는 배치 조회 조건에서 가장 자주 사용되므로 인덱스가 필요하다.
 
 액션:
-payment_date 또는 payment_date + merchant_id 복합 인덱스를 적용한다.
+transaction_date 또는 transaction_date + merchant_id 복합 인덱스를 적용한다.
 
 검증:
 동일한 데이터와 동일한 정산일자로 인덱스 적용 전후 처리 시간을 비교한다.
@@ -109,6 +109,7 @@ payment_date 또는 payment_date + merchant_id 복합 인덱스를 적용한다.
     - 결제 데이터 100,000건
     - 특정일 거래 약 70,000건
 - BASIC_LOOP 정산 배치 구현
+- GROUP_BY_QUERY 정산 배치 구현
 - 정산 실행 API 구현
     - `POST /api/settlements/run`
 - 정산 결과 조회 API 구현
@@ -121,7 +122,6 @@ payment_date 또는 payment_date + merchant_id 복합 인덱스를 적용한다.
 
 현재 부족한 부분은 다음과 같다.
 
-- GROUP BY 기반 개선 전략 미구현
 - 벌크 저장 최적화 미구현
 - 인덱스 적용 및 성능 비교 미구현
 - 테스트 부족
@@ -239,7 +239,7 @@ payment_date 또는 payment_date + merchant_id 복합 인덱스를 적용한다.
 
 현재 BASIC_LOOP 방식은 특정 날짜의 Payment 데이터를 모두 조회한 뒤 Java 반복문으로 집계한다.
 
-향후 GROUP_BY_QUERY 방식에서는 이 테이블을 기준으로 DB에서 직접 가맹점별 금액을 집계한다.
+GROUP_BY_QUERY 방식에서는 이 테이블을 기준으로 DB에서 직접 가맹점별 금액을 집계한다.
 
 ### 컬럼
 
@@ -247,12 +247,11 @@ payment_date 또는 payment_date + merchant_id 복합 인덱스를 적용한다.
 |---|---|---:|---|---|
 | id | bigint | No | auto increment | 결제/취소 데이터 ID |
 | merchant_id | bigint | No |  | 가맹점 ID |
-| payment_date | date | No |  | 결제 또는 취소 기준일 |
+| transaction_date | date | No |  | 결제 또는 취소 기준일 |
 | amount | decimal | No |  | 거래 금액 |
-| payment_type | varchar | No |  | 거래 유형 |
-| payment_status | varchar | No |  | 거래 상태 |
-| created_at | timestamp | No | current timestamp | 생성 일시 |
-| updated_at | timestamp | Yes |  | 수정 일시 |
+| type | varchar | No |  | 거래 유형 |
+| status | varchar | No |  | 거래 상태 |
+| approved_at | timestamp | No |  | 승인 일시 |
 
 ### 제약조건
 
@@ -265,12 +264,12 @@ payment_date 또는 payment_date + merchant_id 복합 인덱스를 적용한다.
 
 | 이름 | 컬럼 | 유형 | 설명 |
 |---|---|---|---|
-| idx_payments_payment_date | payment_date | Index | 정산일자 기준 조회 최적화 |
+| idx_payments_payment_date | transaction_date | Index | 정산일자 기준 조회 최적화 |
 | idx_payments_merchant_id | merchant_id | Index | 가맹점별 조회 최적화 |
-| idx_payments_type | payment_type | Index | 결제/취소 유형별 조회 |
-| idx_payments_status | payment_status | Index | 완료 상태 데이터 조회 |
-| idx_payments_date_merchant | payment_date, merchant_id | Composite Index | 정산일자 + 가맹점별 집계 최적화 |
-| idx_payments_date_merchant_type | payment_date, merchant_id, payment_type | Composite Index | 정산일자 + 가맹점 + 결제/취소 유형 집계 최적화 |
+| idx_payments_type | type | Index | 결제/취소 유형별 조회 |
+| idx_payments_status | status | Index | 완료 상태 데이터 조회 |
+| idx_payments_date_merchant | transaction_date, merchant_id | Composite Index | 정산일자 + 가맹점별 집계 최적화 |
+| idx_payments_date_merchant_type | transaction_date, merchant_id, type | Composite Index | 정산일자 + 가맹점 + 결제/취소 유형 집계 최적화 |
 
 ### 관계
 
@@ -284,7 +283,8 @@ payment_date 또는 payment_date + merchant_id 복합 인덱스를 적용한다.
 - 대용량 정산 배치 성능 테스트를 위한 원천 거래 데이터이다.
 - 현재 더미 데이터는 100,000건 이상 생성된다.
 - 특정일에 약 70,000건이 몰리도록 구성되어 성능 병목을 확인할 수 있다.
-- GROUP BY 개선 전략의 핵심 조회 대상이다.
+- GROUP_BY_QUERY의 핵심 조회 대상이다.
+- 현재 코드의 GROUP_BY_QUERY는 `transaction_date`, `status`, `type`, `merchant_id`를 기준으로 완료 거래만 DB에서 가맹점별 집계한다.
 
 ---
 
@@ -325,9 +325,8 @@ GROUP_BY_BULK_INDEX
 | total_cancel_amount | decimal | No | 0 | 총 취소금액 |
 | net_sales_amount | decimal | No | 0 | 순매출 |
 | fee_amount | decimal | No | 0 | 수수료 |
-| settlement_amount | decimal | No | 0 | 최종 정산금액 |
-| created_at | timestamp | No | current timestamp | 생성 일시 |
-| updated_at | timestamp | Yes |  | 수정 일시 |
+| fee_rate | decimal | No | 0 | 적용 수수료율 |
+| final_settlement_amount | decimal | No | 0 | 최종 정산금액 |
 
 ### 제약조건
 
@@ -528,6 +527,22 @@ end $$;
 commit;
 ```
 
+GROUP_BY_QUERY에서 사용하는 집계 쿼리의 개념은 다음과 같다. 실제 코드는 JPQL을 사용하며 Entity 필드명인 `transactionDate`, `status`, `type`, `amount`, `merchant`를 기준으로 작성한다.
+
+```sql
+select
+    p.merchant_id,
+    m.fee_rate,
+    sum(case when p.type = 'PAYMENT' then p.amount else 0 end) as total_payment_amount,
+    sum(case when p.type = 'CANCEL' then p.amount else 0 end) as total_cancel_amount,
+    count(*) as processed_count
+from payments p
+join merchants m on m.id = p.merchant_id
+where p.transaction_date = :settlementDate
+  and p.status = 'COMPLETED'
+group by p.merchant_id, m.fee_rate;
+```
+
 마이그레이션 후 확인 쿼리:
 
 ```sql
@@ -587,12 +602,12 @@ where conrelid = 'settlements'::regclass;
 | settlement_date | date | No |  | 정산일자 |
 | processing_strategy | varchar | No |  | 처리 전략 |
 | status | varchar | No |  | 배치 상태 |
-| total_count | bigint | No | 0 | 전체 처리 건수 |
+| processed_count | bigint | No | 0 | 전체 처리 건수 |
 | success_count | bigint | No | 0 | 성공 건수 |
 | failure_count | bigint | No | 0 | 실패 건수 |
 | started_at | timestamp | No |  | 배치 시작 일시 |
 | ended_at | timestamp | Yes |  | 배치 종료 일시 |
-| elapsed_millis | bigint | Yes |  | 총 실행 시간 |
+| elapsed_ms | bigint | No | 0 | 총 실행 시간 |
 | error_message | text | Yes |  | 전체 실패 원인 |
 | created_at | timestamp | No | current timestamp | 생성 일시 |
 
@@ -622,7 +637,7 @@ where conrelid = 'settlements'::regclass;
 ### 비고
 
 - 성능 비교 표는 이 테이블의 데이터를 기반으로 작성한다.
-- README와 PPT에 들어갈 처리 시간은 `elapsed_millis`를 기준으로 한다.
+- README와 PPT에 들어갈 처리 시간은 `elapsed_ms`를 기준으로 한다.
 - 실패해도 이력은 남아야 한다.
 
 ---
@@ -1372,12 +1387,12 @@ executions
 
 | 테이블 | 인덱스 | 컬럼 | 목적 |
 |---|---|---|---|
-| payments | idx_payments_payment_date | payment_date | 정산일자 기준 조회 |
+| payments | idx_payments_payment_date | transaction_date | 정산일자 기준 조회 |
 | payments | idx_payments_merchant_id | merchant_id | 가맹점별 조회 |
-| payments | idx_payments_type | payment_type | 결제/취소 유형별 조회 |
-| payments | idx_payments_status | payment_status | 완료 상태 조회 |
-| payments | idx_payments_date_merchant | payment_date, merchant_id | 정산일자 + 가맹점별 집계 |
-| payments | idx_payments_date_merchant_type | payment_date, merchant_id, payment_type | 정산일자 + 가맹점 + 유형별 집계 |
+| payments | idx_payments_type | type | 결제/취소 유형별 조회 |
+| payments | idx_payments_status | status | 완료 상태 조회 |
+| payments | idx_payments_date_merchant | transaction_date, merchant_id | 정산일자 + 가맹점별 집계 |
+| payments | idx_payments_date_merchant_type | transaction_date, merchant_id, type | 정산일자 + 가맹점 + 유형별 집계 |
 | settlements | idx_settlements_settlement_date | settlement_date | 정산일자별 결과 조회 |
 | settlements | idx_settlements_date_strategy | settlement_date, processing_strategy | 정산일자 + 전략별 결과 조회 |
 | settlements | idx_settlements_merchant_date | merchant_id, settlement_date | 중복 정산 검증 |
