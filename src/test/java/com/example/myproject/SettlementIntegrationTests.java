@@ -195,6 +195,19 @@ class SettlementIntegrationTests {
         assertThat(history.getErrorMessage()).isNull();
     }
 
+    @Test
+    void resetSettlementsDeletesOnlySettlementResultsForDateAndKeepsHistories() {
+        createPaymentFixture();
+        settlementService.run(SETTLEMENT_DATE, SettlementStrategy.BASIC_LOOP);
+        settlementService.run(SETTLEMENT_DATE, SettlementStrategy.GROUP_BY_QUERY);
+
+        int deletedCount = settlementService.resetSettlements(SETTLEMENT_DATE);
+
+        assertThat(deletedCount).isEqualTo(2);
+        assertThat(settlementRepository.count()).isZero();
+        assertThat(batchJobHistoryRepository.findAll()).hasSize(2);
+    }
+
     private void createPaymentFixture() {
         Merchant merchant = merchantRepository.save(new Merchant("merchant-a", new BigDecimal("0.0300")));
         paymentRepository.save(new Payment(

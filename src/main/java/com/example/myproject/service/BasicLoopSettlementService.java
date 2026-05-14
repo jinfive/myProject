@@ -78,6 +78,11 @@ public class BasicLoopSettlementService {
         );
     }
 
+    @Transactional
+    public int resetSettlements(LocalDate settlementDate) {
+        return settlementRepository.deleteAllBySettlementDate(settlementDate);
+    }
+
     @Transactional(readOnly = true)
     public List<BatchJobHistory> getBatchHistories() {
         return batchJobHistoryRepository.findTop20ByOrderByStartedAtDesc();

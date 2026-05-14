@@ -40,6 +40,7 @@ function App() {
   const [summary, setSummary] = useState(emptySummary);
   const [histories, setHistories] = useState([]);
   const [isRunning, setIsRunning] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
 
   const lastRun = histories[0];
@@ -96,6 +97,28 @@ function App() {
     }
   };
 
+  const handleReset = async () => {
+    setIsResetting(true);
+    setErrorMessage('');
+
+    try {
+      const response = await axios.delete(`${API_BASE_URL}/settlements`, {
+        params: {
+          date: settlementDate,
+        },
+      });
+      setSummary(emptySummary);
+      await fetchHistories();
+      setErrorMessage(`${settlementDate} 정산 결과 ${formatCount(response.data.deletedCount)}를 초기화했습니다.`);
+    } catch (error) {
+      const message = error.response?.data?.message ?? '정산 결과 초기화 중 오류가 발생했습니다.';
+      setErrorMessage(message);
+      await refreshDashboard(settlementDate, strategy).catch(() => undefined);
+    } finally {
+      setIsResetting(false);
+    }
+  };
+
   const elapsedRows = useMemo(
     () => histories.filter((history) => history.strategy === strategy).slice(0, 5),
     [histories, strategy],
@@ -113,7 +136,7 @@ function App() {
             </p>
           </div>
 
-          <div className="grid gap-3 rounded-md border border-line bg-panel p-4 lg:grid-cols-[180px_220px_1fr_auto]">
+          <div className="grid gap-3 rounded-md border border-line bg-panel p-4 lg:grid-cols-[180px_220px_1fr_auto_auto]">
             <label className="flex flex-col gap-2 text-sm font-medium text-muted">
               정산일자
               <input
@@ -154,9 +177,18 @@ function App() {
               className="h-11 self-end rounded-md bg-accent px-5 text-sm font-semibold text-white hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-slate-400"
               type="button"
               onClick={handleRun}
-              disabled={isRunning || !isStrategyImplemented}
+              disabled={isRunning || isResetting || !isStrategyImplemented}
             >
               {isRunning ? '정산 실행 중...' : '정산 배치 실행'}
+            </button>
+
+            <button
+              className="h-11 self-end rounded-md border border-line bg-white px-5 text-sm font-semibold text-ink hover:border-rose-300 hover:text-rose-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+              type="button"
+              onClick={handleReset}
+              disabled={isRunning || isResetting}
+            >
+              {isResetting ? '초기화 중...' : '정산 결과 초기화'}
             </button>
           </div>
 

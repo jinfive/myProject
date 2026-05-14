@@ -10,6 +10,7 @@ import java.util.List;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -59,6 +60,14 @@ public class SettlementController {
         return SettlementSummaryResponse.of(strategy, processedCount, elapsedMs, settlements);
     }
 
+    @DeleteMapping("/settlements")
+    public ResetSettlementsResponse resetSettlements(
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date
+    ) {
+        int deletedCount = settlementService.resetSettlements(date);
+        return new ResetSettlementsResponse(date, deletedCount);
+    }
+
     @GetMapping("/batch-histories")
     public List<BatchJobHistoryResponse> getBatchHistories() {
         return settlementService.getBatchHistories()
@@ -78,5 +87,8 @@ public class SettlementController {
     }
 
     public record ErrorResponse(String message) {
+    }
+
+    public record ResetSettlementsResponse(LocalDate date, int deletedCount) {
     }
 }
