@@ -265,6 +265,72 @@ GROUP_BY_QUERY는 Payment 전체를 애플리케이션으로 가져오지 않고
 
 A. 개선 효과를 단계별로 설명하기 위해서입니다. GROUP_BY_QUERY 단계에서는 조회와 집계 병목만 줄이고, Settlement 저장 최적화는 GROUP_BY_BULK_SAVE 단계에서 별도로 비교하는 것이 더 명확하다고 판단했습니다.
 
+---
+
+## GROUP_BY_BULK_SAVE 1차 구현
+
+### 1. 문제 상황
+
+GROUP_BY_QUERY로 Payment 전체 Entity 로딩 병목은 줄였지만, Settlement 저장은 여전히 개별 `save` 반복 구조였다. 집계 결과 수가 늘어나면 저장 호출도 병목이 될 수 있다.
+
+### 2. 금융 관점에서 중요한 이유
+
+저장 성능을 개선하더라도 정산 결과가 일부 누락되거나 가맹점별 금액이 달라지면 금융 데이터 정합성이 깨진다. 따라서 저장 방식 변경은 실행 시간뿐 아니라 저장 건수와 금액 동일성 검증이 함께 필요하다.
+
+### 3. 판단 기준
+
+한 번에 Hibernate batch_size와 PostgreSQL JDBC 옵션까지 적용하면 어떤 변경이 효과를 냈는지 설명하기 어렵다. 그래서 이번 단계에서는 `saveAll`만 적용하고, 실제 batch insert 설정은 다음 단계로 분리했다.
+
+### 4. 기술 선택
+
+- GROUP_BY_QUERY의 DB GROUP BY 집계 재사용
+- GroupByBulkSaveSettlementProcessor 추가
+- `settlementRepository.saveAll(settlements)` 적용
+- BatchJobHistory 실행 이력 유지
+
+### 5. 구현 액션
+
+- GROUP_BY_BULK_SAVE 전략 실행 분기 추가
+- Payment 전체 Entity List 조회 없이 집계 결과로 Settlement 생성
+- 개별 `save` 반복 대신 `saveAll` 저장
+- 프론트에서 GROUP_BY_BULK_SAVE 실행 가능 처리
+- GROUP_BY_BULK_INDEX는 미구현 상태 유지
+
+### 6. 검증 방법
+
+- `./gradlew test`
+- `cd frontend && npm run build`
+- 저장 건수 검증: 집계 결과 건수, 생성 Settlement 수, 저장 Settlement 수 비교
+- 금액 정합성 검증: BASIC_LOOP, GROUP_BY_QUERY, GROUP_BY_BULK_SAVE의 가맹점별 금액 비교
+- 실패 처리 검증: GROUP_BY_BULK_SAVE 저장 후 강제 예외 시 Settlement 롤백과 BatchJobHistory FAILED 보존 확인
+- API 수동 검증: 2026-05-14, Payment 100,000건 기준 세 전략 실행
+
+### 7. 결과
+
+테스트에서 GROUP_BY_BULK_SAVE는 Payment 전체 Entity List를 조회하지 않고 DB GROUP BY 집계 결과를 사용하며, `saveAll`을 호출하는 것을 확인했다. 100,000건 로컬 API 1회 측정에서 BASIC_LOOP는 882ms, GROUP_BY_QUERY는 133ms, GROUP_BY_BULK_SAVE는 110ms로 기록되었다. 세 전략 모두 정산 결과 100건과 총 결제금액, 총 취소금액, 총 수수료, 총 정산금액이 동일했다.
+
+### 8. 포트폴리오 문장
+
+GROUP_BY_QUERY로 조회 병목을 줄인 뒤, 저장 단계에서도 반복 insert가 병목이 될 수 있다고 판단했습니다. GROUP_BY_BULK_SAVE 1차 구현에서는 집계 결과로 생성한 Settlement를 개별 저장하지 않고 saveAll 기반으로 저장하도록 변경했습니다. 저장 방식이 바뀌어도 금융 데이터의 정합성이 깨지면 안 된다고 판단해, 집계 결과 건수와 실제 저장 건수, 가맹점별 정산금액이 기존 전략들과 동일한지 검증했습니다.
+
+### 9. 자소서 문장
+
+대용량 정산 배치에서 조회 병목을 GROUP BY 집계로 줄인 뒤, 저장 단계에서도 반복 저장이 병목이 될 수 있다고 판단했습니다. 이에 정산 결과를 개별 저장하지 않고 일괄 저장하는 방식으로 개선하되, 저장 건수와 가맹점별 정산금액이 기존 방식과 동일한지 검증했습니다. 성능 개선 과정에서도 데이터 정합성과 중복 처리 방지를 우선해, 같은 정산일자와 처리 전략이 중복 실행되지 않도록 유지했습니다.
+
+### 10. 면접 답변
+
+GROUP_BY_BULK_SAVE는 GROUP_BY_QUERY의 DB GROUP BY 집계 결과를 그대로 사용하고, Settlement 저장 방식만 개별 save 반복에서 saveAll로 바꾼 단계입니다. saveAll만으로 실제 DB batch insert 효과가 보장되는 것은 아니기 때문에 이번 단계에서는 저장 호출 구조 개선과 정합성 검증에 집중했습니다. 집계 결과 건수와 저장 건수가 일치하는지, BASIC_LOOP와 GROUP_BY_QUERY와 금액이 같은지 테스트와 API로 확인했습니다.
+
+### 11. 예상 질문
+
+**Q. saveAll을 적용하면 바로 벌크 저장이라고 볼 수 있나요?**
+
+A. 코드상 일괄 저장 구조를 만들었다고 볼 수 있지만, JPA/Hibernate에서 실제 DB batch insert 효과를 보려면 `hibernate.jdbc.batch_size` 같은 설정이 추가로 필요할 수 있습니다. 그래서 이번 단계에서는 saveAll만 적용하고, batch_size와 PostgreSQL `reWriteBatchedInserts=true`는 다음 단계로 분리했습니다.
+
+**Q. saveAll 적용 후 어떤 정합성 검증을 했나요?**
+
+A. 집계 결과 건수, 생성 Settlement 수, 실제 저장 Settlement 수가 같은지 확인했습니다. 또한 BASIC_LOOP, GROUP_BY_QUERY, GROUP_BY_BULK_SAVE의 가맹점별 결제금액, 취소금액, 순매출, 수수료, 최종 정산금액이 같은지 검증했습니다.
+
 **Q. 성능 수치가 왜 흔들리나요?**
 
 A. 로컬 단일 DB에서 측정했기 때문에 DB/OS 캐시, JVM warm-up, 실행 순서 영향을 받습니다. 그래서 단일값을 성과로 과장하지 않고 반복 측정 범위와 조건을 함께 기록했습니다.

@@ -55,7 +55,7 @@
 
 ### 2.1 1단계: 배치 처리 성능 개선
 
-현재는 1단계인 **정산 배치 성능 비교용 MVP 중 GROUP_BY_QUERY 구현 완료** 단계이다.
+현재는 1단계인 **정산 배치 성능 비교용 MVP 중 GROUP_BY_BULK_SAVE 1차 구현 완료** 단계이다.
 
 현재 구현된 기능:
 
@@ -68,6 +68,7 @@
     * 특정일 거래 약 70,000건
 * BASIC_LOOP 정산 배치 구현
 * GROUP_BY_QUERY 정산 배치 구현
+* GROUP_BY_BULK_SAVE 1차 정산 배치 구현
 * 정산 실행 API 구현
 
     * `POST /api/settlements/run`
@@ -195,7 +196,7 @@
 | TD-002 | 핵심 정산 계산 테스트 부족                             | Open    | P1   | High   | TBD | 2026-05-11 | TBD    |
 | TD-003 | 중복 정산 방지 테스트 부족                             | Resolved | P1   | High   | TBD | 2026-05-11 | 2026-05-12 |
 | TD-004 | GROUP BY 기반 정산 개선 전략 미구현                    | Resolved | P1   | High   | TBD | 2026-05-11 | 2026-05-13 |
-| TD-005 | 벌크 저장 최적화 미구현                               | Open    | P1   | High   | TBD | 2026-05-11 | TBD    |
+| TD-005 | GROUP_BY_BULK_SAVE 1차 saveAll 적용                  | Resolved | P1   | High   | TBD | 2026-05-11 | 2026-05-14 |
 | TD-006 | 인덱스 적용 및 성능 비교 미구현                          | Open    | P1   | High   | TBD | 2026-05-11 | TBD    |
 | TD-007 | 실제 테이블 기준 DB 문서 미갱신                         | Open    | P2   | Medium | TBD | 2026-05-11 | TBD    |
 | TD-008 | 배치 실패 이력과 재실행 정책 부족                         | In Progress | P1   | High   | TBD | 2026-05-11 | TBD    |
@@ -215,6 +216,7 @@
 | TD-022 | Payment 원천 데이터와 Settlement 결과 대사 기능 미구현                  | Open | P1   | High   | TBD | 2026-05-13 | TBD |
 | TD-023 | RUNNING 상태 기준 중복 실행 방지 미구현                  | Open | P1   | High   | TBD | 2026-05-13 | TBD |
 | TD-024 | 날짜 파티셔닝 고도화 항목 문서화 필요                  | Open | P2   | Medium | TBD | 2026-05-13 | TBD |
+| TD-025 | Hibernate batch_size와 reWriteBatchedInserts 적용 검토                  | Open | P1   | High   | TBD | 2026-05-14 | TBD |
 
 ---
 
@@ -950,7 +952,7 @@ TBD
 
 정산 결과 저장 시 개별 저장이 반복되면 데이터가 많아질수록 DB 저장 호출이 많아질 수 있다.
 
-현재 벌크 저장 최적화가 GROUP BY 이후 단계형 전략으로 구현되어 있지 않다.
+GROUP_BY_BULK_SAVE 1차 구현 전에는 벌크 저장 최적화가 GROUP BY 이후 단계형 전략으로 구현되어 있지 않았다.
 
 ### 영향
 
@@ -967,21 +969,67 @@ GROUP_BY_BULK_SAVE 전략을 추가한다.
 ```txt
 1. 정산 결과를 List<Settlement>로 생성
 2. 반복 save 대신 saveAll 적용
-3. 필요 시 Hibernate batch insert 설정 검토
+3. Hibernate batch insert 설정은 후속 단계로 분리
 4. BASIC_LOOP, GROUP_BY_QUERY, GROUP_BY_BULK_SAVE와 처리 시간 비교
 ```
 
 ### 완료 기준
 
-* [ ] GROUP_BY_BULK_SAVE 전략이 구현되었다.
-* [ ] Settlement 저장 방식이 일괄 저장으로 개선되었다.
-* [ ] 처리 시간이 BatchJobHistory에 기록된다.
-* [ ] 기존 결과와 금액이 동일한지 테스트 또는 수동 검증했다.
-* [ ] README 성능 비교 표에 결과를 추가했다.
+* [x] GROUP_BY_BULK_SAVE 전략이 구현되었다.
+* [x] Settlement 저장 방식이 `saveAll` 기반으로 개선되었다.
+* [x] 처리 시간이 BatchJobHistory에 기록된다.
+* [x] 기존 결과와 금액이 동일한지 테스트 또는 수동 검증했다.
+* [x] README 성능 비교 표에 결과를 추가했다.
 
 ### 메모
 
-처음에는 `saveAll` 기준으로 구현하고, 이후 batch insert 설정을 검토한다.
+2026-05-14에 `saveAll` 기준 1차 구현을 완료했다. 100,000건 동일 조건 1회 측정에서 BASIC_LOOP 882ms, GROUP_BY_QUERY 133ms, GROUP_BY_BULK_SAVE 110ms가 기록되었다. 세 전략 모두 정산 결과 100건과 총 금액 합계가 동일했다.
+
+Hibernate `batch_size`, `order_inserts`, PostgreSQL JDBC `reWriteBatchedInserts=true`는 TD-025로 분리해 다음 단계에서 검토한다.
+
+---
+
+## TD-025: Hibernate batch_size와 reWriteBatchedInserts 적용 검토
+
+### 상태
+
+Open
+
+### 문제
+
+`saveAll`은 코드상 일괄 저장 구조를 만들지만, JPA/Hibernate에서 실제 DB batch insert 효과를 충분히 보려면 Hibernate `jdbc.batch_size`, `order_inserts`, PostgreSQL JDBC `reWriteBatchedInserts=true` 같은 설정이 추가로 필요할 수 있다.
+
+### 영향
+
+`saveAll` 적용만으로 벌크 저장 성능 효과를 단정하면 포트폴리오 설명이 부정확해질 수 있다.
+
+### 해결 방향
+
+GROUP_BY_BULK_SAVE 1차 결과를 기준으로 다음 설정을 별도 단계에서 적용하고 성능과 정합성을 재검증한다.
+
+```yaml
+spring:
+  jpa:
+    properties:
+      hibernate:
+        jdbc:
+          batch_size: 1000
+        order_inserts: true
+        order_updates: true
+```
+
+PostgreSQL JDBC URL 후보:
+
+```txt
+reWriteBatchedInserts=true
+```
+
+### 완료 기준
+
+* [ ] Hibernate batch_size 적용 전후 실행 시간이 비교되었다.
+* [ ] PostgreSQL reWriteBatchedInserts 적용 여부가 판단되었다.
+* [ ] BASIC_LOOP, GROUP_BY_QUERY, GROUP_BY_BULK_SAVE 결과 금액 동일성이 재검증되었다.
+* [ ] README와 포트폴리오 문서에 실제 측정값만 반영되었다.
 
 ---
 

@@ -41,7 +41,7 @@
 2단계: 실시간 주식 시세 API 기반 모의 주문·체결 처리 시스템
 ```
 
-현재는 1단계인 **정산 배치 성능 비교용 MVP 중 GROUP_BY_QUERY 구현 완료** 단계이다.
+현재는 1단계인 **정산 배치 성능 비교용 MVP 중 GROUP_BY_BULK_SAVE 1차 구현 완료** 단계이다.
 
 현재 구현된 기능:
 
@@ -53,6 +53,7 @@
     - 특정일 거래 약 70,000건
 - BASIC_LOOP 정산 배치 구현
 - GROUP_BY_QUERY 정산 배치 구현
+- GROUP_BY_BULK_SAVE 1차 정산 배치 구현
 - 정산 실행 API 구현
     - `POST /api/settlements/run`
 - 정산 결과 조회 API 구현
@@ -717,6 +718,10 @@ GROUP_BY_BULK_INDEX
 - 실무 정산 배치라면 전체 Payment 데이터를 애플리케이션으로 가져오는 방식보다 DB GROUP BY 집계가 더 적절하다.
 - GROUP_BY_QUERY는 Payment 전체 Entity 목록을 애플리케이션으로 로딩하지 않고, DB GROUP BY 결과만 받아 BASIC_LOOP와 같은 계산식과 반올림 정책으로 정산금액을 계산한다.
 - GROUP_BY_QUERY 단계에서는 개선 효과를 분리하기 위해 Settlement 저장 방식을 개별 저장으로 유지한다.
+- GROUP_BY_BULK_SAVE 1차 단계에서는 GROUP_BY_QUERY의 DB GROUP BY 집계 결과를 재사용하고, Settlement 저장 방식만 `saveAll` 기반으로 변경한다.
+- 저장 방식 변경 후에는 집계 결과 건수, 생성 Settlement 수, 실제 저장 Settlement 수가 일치하는지 검증한다.
+- BASIC_LOOP, GROUP_BY_QUERY, GROUP_BY_BULK_SAVE의 가맹점별 금액이 동일한지 검증한다.
+- `saveAll`만으로 실제 DB batch insert 효과를 단정하지 않고, Hibernate `batch_size`와 PostgreSQL `reWriteBatchedInserts=true`는 다음 단계에서 분리 검토한다.
 - 로컬 벤치마크 데이터 날짜 동기화는 Payment 전체를 Entity List로 로딩하지 않고 벌크 update/delete로 처리한다.
 - 같은 DB 설정에서 비교한다.
 - 실행 시간을 BatchJobHistory에 기록한다.

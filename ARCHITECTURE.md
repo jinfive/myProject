@@ -73,7 +73,7 @@
 현재 구현 상태:
 
 ```txt
-정산 배치 성능 비교용 MVP 중 GROUP_BY_QUERY 구현 완료
+정산 배치 성능 비교용 MVP 중 GROUP_BY_BULK_SAVE 1차 구현 완료
 ```
 
 현재 구현된 기능:
@@ -87,6 +87,7 @@
     * 특정일 거래 약 70,000건
 * BASIC_LOOP 정산 배치 구현
 * GROUP_BY_QUERY 정산 배치 구현
+* GROUP_BY_BULK_SAVE 1차 정산 배치 구현
 * 정산 실행 API 구현
 * 정산 결과 조회 API 구현
 * 배치 이력 조회 API 구현
@@ -666,7 +667,7 @@ GROUP_BY_BULK_INDEX
 
 ### 10.2 GROUP_BY_QUERY
 
-향후 구현할 쿼리 개선 전략이다.
+구현 완료된 쿼리 개선 전략이다.
 
 흐름:
 
@@ -690,14 +691,14 @@ Payment 전체 조회 제거
 
 ### 10.3 GROUP_BY_BULK_SAVE
 
-향후 구현할 저장 성능 개선 전략이다.
+1차 구현이 완료된 저장 성능 개선 전략이다.
 
 흐름:
 
 ```txt
-Settlement를 한 건씩 저장하지 않음
+DB GROUP BY 집계 결과 재사용
 → 정산 결과 목록을 생성
-→ saveAll 또는 batch insert 적용
+→ settlementRepository.saveAll 적용
 → 반복적인 DB 저장 호출 감소
 → 실행 시간 기록
 ```
@@ -705,6 +706,14 @@ Settlement를 한 건씩 저장하지 않음
 목적:
 
 * 저장 구간 병목 완화
+* 저장 방식 변경 후 결과 누락 여부 검증
+* BASIC_LOOP, GROUP_BY_QUERY와 금액 정합성 비교
+
+범위:
+
+* 이번 단계에서는 `saveAll`만 적용한다.
+* Hibernate `batch_size`, `order_inserts`, PostgreSQL JDBC `reWriteBatchedInserts=true`는 다음 단계로 분리한다.
+* GROUP_BY_BULK_INDEX와 인덱스 적용은 아직 구현하지 않는다.
 * 반복적인 save 호출 감소
 * 대량 정산 결과 저장 성능 개선
 

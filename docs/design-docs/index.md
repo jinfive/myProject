@@ -93,7 +93,7 @@ GROUP BY, 벌크 저장, 인덱스 적용으로 어떻게 개선했는가?
 현재 프로젝트는 다음 상태를 기준으로 한다.
 
 ```txt
-정산 배치 성능 비교용 MVP 중 GROUP_BY_QUERY 구현 완료
+정산 배치 성능 비교용 MVP 중 GROUP_BY_BULK_SAVE 1차 구현 완료
 ```
 
 현재 구현된 기능:
@@ -106,6 +106,7 @@ GROUP BY, 벌크 저장, 인덱스 적용으로 어떻게 개선했는가?
     - 특정일 거래 약 70,000건
 - BASIC_LOOP 정산 배치 구현
 - GROUP_BY_QUERY 정산 배치 구현
+- GROUP_BY_BULK_SAVE 1차 정산 배치 구현
 - 정산 실행 API 구현
 - 정산 결과 조회 API 구현
 - 배치 이력 조회 API 구현
@@ -268,10 +269,14 @@ trading-performance-design.md
 설계 문서에서 정리할 내용:
 
 - 기존 저장 방식
-- `saveAll` 적용 방식
-- batch insert 적용 여부
+- `saveAll` 1차 적용 방식
+- 저장 건수와 금액 정합성 검증 기준
+- Hibernate batch insert 적용 여부
+- PostgreSQL `reWriteBatchedInserts=true` 적용 여부
 - flush 기준
 - 성능 비교 기준
+
+현재 GROUP_BY_BULK_SAVE 1차 구현에서는 GROUP_BY_QUERY의 DB GROUP BY 집계 결과를 재사용하고, Settlement 저장만 `saveAll` 기반으로 변경했다. Hibernate batch 설정과 PostgreSQL JDBC 옵션은 다음 설계 단계에서 분리 검토한다.
 
 ---
 

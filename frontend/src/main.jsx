@@ -7,7 +7,7 @@ const API_BASE_URL = 'http://localhost:8080/api';
 const strategyOptions = [
   { value: 'BASIC_LOOP', label: 'BASIC_LOOP', implemented: true },
   { value: 'GROUP_BY_QUERY', label: 'GROUP_BY_QUERY', implemented: true },
-  { value: 'GROUP_BY_BULK_SAVE', label: 'GROUP_BY_BULK_SAVE - 아직 미구현', implemented: false },
+  { value: 'GROUP_BY_BULK_SAVE', label: 'GROUP_BY_BULK_SAVE', implemented: true },
   { value: 'GROUP_BY_BULK_INDEX', label: 'GROUP_BY_BULK_INDEX - 아직 미구현', implemented: false },
 ];
 

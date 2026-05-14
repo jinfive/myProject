@@ -63,7 +63,7 @@
 현재 상태:
 
 ```txt
-정산 배치 성능 비교용 MVP 중 GROUP_BY_QUERY 구현 완료
+정산 배치 성능 비교용 MVP 중 GROUP_BY_BULK_SAVE 1차 구현 완료
 ```
 
 현재 구현된 기능:
@@ -76,6 +76,7 @@
     - 특정일 거래 약 70,000건
 - BASIC_LOOP 정산 배치 구현
 - GROUP_BY_QUERY 정산 배치 구현
+- GROUP_BY_BULK_SAVE 1차 정산 배치 구현
 - 정산 실행 API 구현
     - POST /api/settlements/run
 - 정산 결과 조회 API 구현
@@ -529,7 +530,7 @@ README와 PPT에 처리 시간 비교표와 개선 이유를 정리한다.
 
 현재 목표는 1단계 배치 성능 개선 프로젝트를 완성하는 것이다.
 
-현재는 BASIC_LOOP 기준선과 GROUP_BY_QUERY 개선 전략이 구현되어 있다. 앞으로의 작업은 성능 개선을 단계별로 분리하고, 각 단계가 끝날 때마다 README/PPT에 설명 가능한 기록을 남기는 방식으로 진행한다.
+현재는 BASIC_LOOP 기준선, GROUP_BY_QUERY 개선 전략, GROUP_BY_BULK_SAVE 1차 saveAll 적용이 구현되어 있다. 앞으로의 작업은 성능 개선을 단계별로 분리하고, 각 단계가 끝날 때마다 README/PPT에 설명 가능한 기록을 남기는 방식으로 진행한다.
 
 ```txt
 문제 인식
@@ -545,12 +546,14 @@ README와 PPT에 처리 시간 비교표와 개선 이유를 정리한다.
 ```txt
 1. GROUP_BY_QUERY 구현
 2. BASIC_LOOP와 결과 동일성 검증
-3. GROUP_BY_BULK_SAVE 구현
-4. GROUP_BY_BULK_INDEX 구현
-5. EXPLAIN ANALYZE로 실행 계획 확인
-6. 대사 기능 추가
-7. RUNNING 중복 실행 방지
-8. 날짜 파티셔닝은 고도화 항목으로 문서화
+3. GROUP_BY_BULK_SAVE 1차 saveAll 적용
+4. Hibernate batch_size 적용 검토
+5. PostgreSQL reWriteBatchedInserts 적용 검토
+6. GROUP_BY_BULK_INDEX 구현
+7. EXPLAIN ANALYZE로 실행 계획 확인
+8. 대사 기능 추가
+9. RUNNING 중복 실행 방지
+10. 날짜 파티셔닝은 고도화 항목으로 문서화
 ```
 
 이 순서는 임의로 바꾸지 않는다. 각 단계는 독립된 개선 액션으로 관리하고, 다음 단계로 넘어가기 전에 검증 결과와 README 반영 내용을 남긴다.
@@ -561,12 +564,14 @@ README와 PPT에 처리 시간 비교표와 개선 이유를 정리한다.
 |---:|---|---|---|
 | 1 | GROUP_BY_QUERY | Payment 전체 조회 제거, DB GROUP BY 집계 적용 | 애플리케이션으로 가져오는 데이터량을 줄였다 |
 | 2 | 결과 동일성 검증 | 성능 개선 후에도 금액 결과가 기준선과 같은지 검증 | 성능보다 정합성을 먼저 확인했다 |
-| 3 | GROUP_BY_BULK_SAVE | GROUP BY 집계는 유지하고 Settlement 저장 방식을 일괄 저장으로 개선 | 개별 save 반복 호출을 줄였다 |
-| 4 | GROUP_BY_BULK_INDEX | 정산 조회 조건과 GROUP BY 조건에 맞는 인덱스 적용 | 조회 조건에 맞는 인덱스를 판단해 적용했다 |
-| 5 | EXPLAIN ANALYZE | 인덱스가 실제 실행 계획에서 사용되는지 확인 | Seq Scan/Index Scan, 실행 시간, rows 예측 차이를 확인했다 |
-| 6 | 대사 기능 | 원천 Payment와 Settlement 결과 일치 검증 | 성능 개선 후에도 결과 정합성이 유지됨을 증명했다 |
-| 7 | RUNNING 중복 실행 방지 | 같은 날짜와 같은 전략의 동시 실행 차단 | 반복 클릭과 동시 요청으로 인한 DB 부하와 충돌을 막았다 |
-| 8 | 날짜 파티셔닝 문서화 | 장기 데이터 누적에 대비한 확장 방향 정리 | 실제 구현이 아니라 고도화 항목으로 남겼다 |
+| 3 | GROUP_BY_BULK_SAVE 1차 | GROUP BY 집계는 유지하고 Settlement 저장 방식을 saveAll로 개선 | 개별 save 반복 호출을 줄이고 저장 건수와 금액 정합성을 검증했다 |
+| 4 | Hibernate batch_size | saveAll 구조에 실제 JDBC batch 설정 적용 여부 검토 | saveAll만으로 충분한지 설정 효과를 분리 측정한다 |
+| 5 | PostgreSQL reWriteBatchedInserts | PostgreSQL JDBC batch rewrite 적용 여부 검토 | 드라이버 옵션 효과가 실제로 있는지 확인한다 |
+| 6 | GROUP_BY_BULK_INDEX | 정산 조회 조건과 GROUP BY 조건에 맞는 인덱스 적용 | 조회 조건에 맞는 인덱스를 판단해 적용했다 |
+| 7 | EXPLAIN ANALYZE | 인덱스가 실제 실행 계획에서 사용되는지 확인 | Seq Scan/Index Scan, 실행 시간, rows 예측 차이를 확인했다 |
+| 8 | 대사 기능 | 원천 Payment와 Settlement 결과 일치 검증 | 성능 개선 후에도 결과 정합성이 유지됨을 증명했다 |
+| 9 | RUNNING 중복 실행 방지 | 같은 날짜와 같은 전략의 동시 실행 차단 | 반복 클릭과 동시 요청으로 인한 DB 부하와 충돌을 막았다 |
+| 10 | 날짜 파티셔닝 문서화 | 장기 데이터 누적에 대비한 확장 방향 정리 | 실제 구현이 아니라 고도화 항목으로 남겼다 |
 
 작업별 README 기록 형식:
 

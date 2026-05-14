@@ -306,6 +306,8 @@ processingStrategy는 BASIC_LOOP, GROUP_BY_QUERY, GROUP_BY_BULK_SAVE, GROUP_BY_B
 pageSize는 상한선을 둔다.
 ```
 
+현재 실행 가능한 정산 전략은 `BASIC_LOOP`, `GROUP_BY_QUERY`, `GROUP_BY_BULK_SAVE`이다. `GROUP_BY_BULK_INDEX`는 enum 값으로는 허용되지만 아직 구현되지 않았으므로 서버에서 명확한 미구현 오류로 응답해야 한다.
+
 2단계 입력 검증 예시:
 
 ```txt

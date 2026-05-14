@@ -13,6 +13,8 @@ public interface SettlementRepository extends JpaRepository<Settlement, Long> {
 
     boolean existsBySettlementDateAndProcessingStrategy(LocalDate settlementDate, SettlementStrategy processingStrategy);
 
+    long countBySettlementDateAndProcessingStrategy(LocalDate settlementDate, SettlementStrategy processingStrategy);
+
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("delete from Settlement")
     int deleteAllInBulk();

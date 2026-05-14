@@ -19,24 +19,26 @@ public class BasicLoopSettlementService {
     private final BatchJobHistoryService batchJobHistoryService;
     private final BasicLoopSettlementProcessor basicLoopSettlementProcessor;
     private final GroupBySettlementProcessor groupBySettlementProcessor;
+    private final GroupByBulkSaveSettlementProcessor groupByBulkSaveSettlementProcessor;
 
     public BasicLoopSettlementService(
             BatchJobHistoryRepository batchJobHistoryRepository,
             SettlementRepository settlementRepository,
             BatchJobHistoryService batchJobHistoryService,
             BasicLoopSettlementProcessor basicLoopSettlementProcessor,
-            GroupBySettlementProcessor groupBySettlementProcessor
+            GroupBySettlementProcessor groupBySettlementProcessor,
+            GroupByBulkSaveSettlementProcessor groupByBulkSaveSettlementProcessor
     ) {
         this.batchJobHistoryRepository = batchJobHistoryRepository;
         this.settlementRepository = settlementRepository;
         this.batchJobHistoryService = batchJobHistoryService;
         this.basicLoopSettlementProcessor = basicLoopSettlementProcessor;
         this.groupBySettlementProcessor = groupBySettlementProcessor;
+        this.groupByBulkSaveSettlementProcessor = groupByBulkSaveSettlementProcessor;
     }
 
     public SettlementRunResult run(LocalDate settlementDate, SettlementStrategy strategy) {
-        if (strategy == SettlementStrategy.GROUP_BY_BULK_SAVE
-                || strategy == SettlementStrategy.GROUP_BY_BULK_INDEX) {
+        if (strategy == SettlementStrategy.GROUP_BY_BULK_INDEX) {
             throw new IllegalArgumentException(strategy + " strategy is not implemented yet.");
         }
 
@@ -63,6 +65,9 @@ public class BasicLoopSettlementService {
         }
         if (strategy == SettlementStrategy.GROUP_BY_QUERY) {
             return groupBySettlementProcessor.run(settlementDate);
+        }
+        if (strategy == SettlementStrategy.GROUP_BY_BULK_SAVE) {
+            return groupByBulkSaveSettlementProcessor.run(settlementDate);
         }
         throw new IllegalArgumentException(strategy + " strategy is not implemented yet.");
     }
