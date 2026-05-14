@@ -4,7 +4,12 @@ import axios from 'axios';
 import './styles.css';
 
 const API_BASE_URL = 'http://localhost:8080/api';
-const strategies = ['BASIC_LOOP', 'GROUP_BY_QUERY', 'GROUP_BY_BULK_SAVE', 'GROUP_BY_BULK_INDEX'];
+const strategyOptions = [
+  { value: 'BASIC_LOOP', label: 'BASIC_LOOP', implemented: true },
+  { value: 'GROUP_BY_QUERY', label: 'GROUP_BY_QUERY', implemented: true },
+  { value: 'GROUP_BY_BULK_SAVE', label: 'GROUP_BY_BULK_SAVE - 아직 미구현', implemented: false },
+  { value: 'GROUP_BY_BULK_INDEX', label: 'GROUP_BY_BULK_INDEX - 아직 미구현', implemented: false },
+];
 
 const emptySummary = {
   processedCount: 0,
@@ -35,9 +40,12 @@ function App() {
   const [summary, setSummary] = useState(emptySummary);
   const [histories, setHistories] = useState([]);
   const [isRunning, setIsRunning] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
 
   const lastRun = histories[0];
+  const selectedStrategy = strategyOptions.find((item) => item.value === strategy);
+  const isStrategyImplemented = selectedStrategy?.implemented ?? false;
 
   const fetchSettlements = async (date, selectedStrategy) => {
     const response = await axios.get(`${API_BASE_URL}/settlements`, {
@@ -65,6 +73,12 @@ function App() {
     setIsRunning(true);
     setErrorMessage('');
 
+    if (!isStrategyImplemented) {
+      setErrorMessage(`${strategy} 전략은 아직 구현되지 않았습니다.`);
+      setIsRunning(false);
+      return;
+    }
+
     try {
       const response = await axios.post(`${API_BASE_URL}/settlements/run`, null, {
         params: {
@@ -80,6 +94,28 @@ function App() {
       await refreshDashboard(settlementDate, strategy).catch(() => undefined);
     } finally {
       setIsRunning(false);
+    }
+  };
+
+  const handleReset = async () => {
+    setIsResetting(true);
+    setErrorMessage('');
+
+    try {
+      const response = await axios.delete(`${API_BASE_URL}/settlements`, {
+        params: {
+          date: settlementDate,
+        },
+      });
+      setSummary(emptySummary);
+      await fetchHistories();
+      setErrorMessage(`${settlementDate} 정산 결과 ${formatCount(response.data.deletedCount)}를 초기화했습니다.`);
+    } catch (error) {
+      const message = error.response?.data?.message ?? '정산 결과 초기화 중 오류가 발생했습니다.';
+      setErrorMessage(message);
+      await refreshDashboard(settlementDate, strategy).catch(() => undefined);
+    } finally {
+      setIsResetting(false);
     }
   };
 
@@ -100,7 +136,7 @@ function App() {
             </p>
           </div>
 
-          <div className="grid gap-3 rounded-md border border-line bg-panel p-4 lg:grid-cols-[180px_220px_1fr_auto]">
+          <div className="grid gap-3 rounded-md border border-line bg-panel p-4 lg:grid-cols-[180px_220px_1fr_auto_auto]">
             <label className="flex flex-col gap-2 text-sm font-medium text-muted">
               정산일자
               <input
@@ -118,9 +154,9 @@ function App() {
                 value={strategy}
                 onChange={(event) => setStrategy(event.target.value)}
               >
-                {strategies.map((item) => (
-                  <option key={item} value={item}>
-                    {item}
+                {strategyOptions.map((item) => (
+                  <option key={item.value} value={item.value} disabled={!item.implemented}>
+                    {item.label}
                   </option>
                 ))}
               </select>
@@ -141,9 +177,18 @@ function App() {
               className="h-11 self-end rounded-md bg-accent px-5 text-sm font-semibold text-white hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-slate-400"
               type="button"
               onClick={handleRun}
-              disabled={isRunning}
+              disabled={isRunning || isResetting || !isStrategyImplemented}
             >
               {isRunning ? '정산 실행 중...' : '정산 배치 실행'}
+            </button>
+
+            <button
+              className="h-11 self-end rounded-md border border-line bg-white px-5 text-sm font-semibold text-ink hover:border-rose-300 hover:text-rose-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+              type="button"
+              onClick={handleReset}
+              disabled={isRunning || isResetting}
+            >
+              {isResetting ? '초기화 중...' : '정산 결과 초기화'}
             </button>
           </div>
 

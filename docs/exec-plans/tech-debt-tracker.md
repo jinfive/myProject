@@ -55,7 +55,7 @@
 
 ### 2.1 1단계: 배치 처리 성능 개선
 
-현재는 1단계인 **정산 배치 성능 비교용 MVP 중 BASIC_LOOP 기준선 구현 완료** 단계이다.
+현재는 1단계인 **정산 배치 성능 비교용 MVP 중 GROUP_BY_QUERY 구현 완료** 단계이다.
 
 현재 구현된 기능:
 
@@ -67,6 +67,7 @@
     * 결제 데이터 100,000건
     * 특정일 거래 약 70,000건
 * BASIC_LOOP 정산 배치 구현
+* GROUP_BY_QUERY 정산 배치 구현
 * 정산 실행 API 구현
 
     * `POST /api/settlements/run`
@@ -85,12 +86,14 @@
 ```txt
 1. DB 설정 불일치
 2. 핵심 정산 로직 테스트 부족
-3. GROUP BY 개선 전략 미구현
-4. 벌크 저장 최적화 미구현
-5. 인덱스 적용 및 성능 비교 미구현
-6. 실제 코드와 DB 문서 불일치
-7. 실패 이력과 재실행 정책 부족
-8. 성능 비교 결과 문서화 부족
+3. 벌크 저장 최적화 미구현
+4. 인덱스 적용 및 성능 비교 미구현
+5. EXPLAIN ANALYZE 실행 계획 확인 미완료
+6. 대사 기능 미구현
+7. RUNNING 중복 실행 방지 미구현
+8. 날짜 파티셔닝 고도화 문서화 필요
+9. 실제 코드와 DB 문서 불일치
+10. 성능 비교 결과 문서화 부족
 ```
 
 ---
@@ -191,7 +194,7 @@
 | TD-001 | `application.yml`과 `compose.yaml` DB 설정 불일치 | Open    | P1   | High   | TBD | 2026-05-11 | TBD    |
 | TD-002 | 핵심 정산 계산 테스트 부족                             | Open    | P1   | High   | TBD | 2026-05-11 | TBD    |
 | TD-003 | 중복 정산 방지 테스트 부족                             | Resolved | P1   | High   | TBD | 2026-05-11 | 2026-05-12 |
-| TD-004 | GROUP BY 기반 정산 개선 전략 미구현                    | Open    | P1   | High   | TBD | 2026-05-11 | TBD    |
+| TD-004 | GROUP BY 기반 정산 개선 전략 미구현                    | Resolved | P1   | High   | TBD | 2026-05-11 | 2026-05-13 |
 | TD-005 | 벌크 저장 최적화 미구현                               | Open    | P1   | High   | TBD | 2026-05-11 | TBD    |
 | TD-006 | 인덱스 적용 및 성능 비교 미구현                          | Open    | P1   | High   | TBD | 2026-05-11 | TBD    |
 | TD-007 | 실제 테이블 기준 DB 문서 미갱신                         | Open    | P2   | Medium | TBD | 2026-05-11 | TBD    |
@@ -208,6 +211,10 @@
 | TD-018 | 2단계 대량 주문 성능 테스트 설계 미작성                     | Planned | P2   | Medium | TBD | 2026-05-11 | TBD    |
 | TD-019 | 로컬 벤치마크 데이터 날짜 동기화 운영 오용 방지                  | In Progress | P2   | Medium | TBD | 2026-05-12 | TBD    |
 | TD-020 | 로컬 DB check constraint와 enum 값 불일치                  | Resolved | P1   | High   | TBD | 2026-05-12 | 2026-05-12 |
+| TD-021 | EXPLAIN ANALYZE 실행 계획 확인 미완료                  | Open | P1   | High   | TBD | 2026-05-13 | TBD |
+| TD-022 | Payment 원천 데이터와 Settlement 결과 대사 기능 미구현                  | Open | P1   | High   | TBD | 2026-05-13 | TBD |
+| TD-023 | RUNNING 상태 기준 중복 실행 방지 미구현                  | Open | P1   | High   | TBD | 2026-05-13 | TBD |
+| TD-024 | 날짜 파티셔닝 고도화 항목 문서화 필요                  | Open | P2   | Medium | TBD | 2026-05-13 | TBD |
 
 ---
 
@@ -321,6 +328,129 @@ processing_strategy check constraint도 현재 enum 값인 `BASIC_LOOP`, `GROUP_
 * [x] processing_strategy check constraint가 현재 enum 값과 일치하도록 보정된다.
 * [x] 수동 확인 SQL과 마이그레이션 SQL을 문서화했다.
 * [x] `./gradlew test`가 통과한다.
+
+---
+
+## TD-021: EXPLAIN ANALYZE 실행 계획 확인 미완료
+
+### 상태
+
+Open
+
+### 우선순위
+
+P1
+
+### 영향도
+
+High
+
+### 문제
+
+GROUP_BY_BULK_INDEX 단계에서 인덱스를 추가하더라도 실제 집계 쿼리가 인덱스를 사용하는지 확인하지 않으면 성능 개선 근거가 약하다.
+
+### 해결 방향
+
+인덱스 적용 전후 `EXPLAIN ANALYZE` 결과를 기록하고, Seq Scan/Index Scan 여부, 실행 시간, rows 예측과 실제 rows 차이를 README와 PPT 재료로 남긴다. 대량 데이터 생성 또는 날짜 동기화 후에는 필요 시 `ANALYZE payments;`를 실행하도록 문서화한다.
+
+### 완료 기준
+
+* [ ] 인덱스 적용 전 실행 계획을 기록했다.
+* [ ] 인덱스 적용 후 실행 계획을 기록했다.
+* [ ] 실제 실행 시간이 README에 반영되었다.
+* [ ] PPT 장표에 사용할 요약이 정리되었다.
+
+---
+
+## TD-022: Payment 원천 데이터와 Settlement 결과 대사 기능 미구현
+
+### 상태
+
+Open
+
+### 우선순위
+
+P1
+
+### 영향도
+
+High
+
+### 문제
+
+성능 개선 전략이 늘어날수록 처리 시간이 줄어도 정산 결과가 원천 Payment와 일치하는지 별도로 증명해야 한다.
+
+### 해결 방향
+
+Payment 기준 총 결제금액, 총 취소금액과 Settlement 기준 금액, 수수료, 최종 정산금액, 차이 금액, 일치 여부를 비교하는 대사 기능을 추가한다.
+
+### 완료 기준
+
+* [ ] Payment 원천 합계와 Settlement 결과를 비교할 수 있다.
+* [ ] 전략별 대사 결과를 확인할 수 있다.
+* [ ] 불일치 여부와 차이 금액이 드러난다.
+* [ ] README/PPT에 정합성 검증 근거로 기록했다.
+
+---
+
+## TD-023: RUNNING 상태 기준 중복 실행 방지 미구현
+
+### 상태
+
+Open
+
+### 우선순위
+
+P1
+
+### 영향도
+
+High
+
+### 문제
+
+SUCCESS 결과 중복 방지는 저장된 Settlement 기준으로 동작하지만, 같은 날짜와 같은 전략의 배치가 이미 RUNNING인 상태에서 새 요청이 들어오는 상황은 별도의 안정성 문제다.
+
+### 해결 방향
+
+BatchJobHistory의 `RUNNING` 상태를 기준으로 같은 `settlementDate + processingStrategy` 실행 중 요청을 거부한다. 이는 버튼 반복 클릭이나 동시 요청으로 인한 불필요한 DB 부하와 충돌을 줄이기 위한 안정성 개선으로 README에 기록한다.
+
+### 완료 기준
+
+* [ ] 같은 날짜와 같은 전략의 RUNNING 이력이 있으면 새 실행을 거부한다.
+* [ ] SUCCESS 결과 중복 방지와 RUNNING 중복 실행 방지의 책임이 구분된다.
+* [ ] 자동 테스트 또는 수동 검증 결과가 있다.
+* [ ] README/PPT에 안정성 개선으로 기록했다.
+
+---
+
+## TD-024: 날짜 파티셔닝 고도화 항목 문서화 필요
+
+### 상태
+
+Open
+
+### 우선순위
+
+P2
+
+### 영향도
+
+Medium
+
+### 문제
+
+정산 배치는 특정 정산일자 기준으로 대량 Payment를 반복 조회하므로 데이터가 장기 누적되면 날짜 기준 파티셔닝을 검토할 수 있다. 다만 현재 포트폴리오 구현 범위에 포함하면 핵심 단계가 흐려질 수 있다.
+
+### 해결 방향
+
+날짜 파티셔닝은 실제 구현하지 않고 고도화 항목으로 문서화한다. 현재 구현 범위는 GROUP BY, Bulk Save, Index, EXPLAIN ANALYZE, 대사, RUNNING 중복 실행 방지까지로 고정한다.
+
+### 완료 기준
+
+* [ ] 날짜 파티셔닝을 고도화 항목으로 README에 정리했다.
+* [ ] 실제 파티셔닝 구현은 하지 않는다.
+* [ ] 장기 데이터 누적 시 검토할 방향과 이유를 설명했다.
 
 ---
 
@@ -762,16 +892,16 @@ GROUP_BY_QUERY 전략을 추가한다.
 
 ### 완료 기준
 
-* [ ] GROUP_BY_QUERY 전략이 구현되었다.
-* [ ] 필요한 Projection 또는 DTO가 추가되었다.
-* [ ] BASIC_LOOP와 동일 정산일자로 실행 가능하다.
-* [ ] BatchJobHistory에 전략명이 기록된다.
-* [ ] 실행 시간이 기록된다.
-* [ ] README 성능 비교 표에 결과를 추가했다.
+* [x] GROUP_BY_QUERY 전략이 구현되었다.
+* [x] 필요한 Projection 또는 DTO가 추가되었다.
+* [x] BASIC_LOOP와 동일 정산일자로 실행 가능하다.
+* [x] BatchJobHistory에 전략명이 기록된다.
+* [x] 실행 시간이 기록된다.
+* [x] README 성능 비교 표에 구현 상태와 비교 방법을 추가했다.
 
 ### 메모
 
-이 항목은 1단계 포트폴리오 핵심 기술부채이다.
+2026-05-13에 GROUP_BY_QUERY를 구현했다. Payment 전체 Entity List를 가져오지 않고 DB GROUP BY 집계 결과만 조회하며, Settlement 저장은 성능 개선 효과 분리를 위해 개별 저장으로 유지했다.
 
 ---
 
@@ -906,12 +1036,12 @@ TBD
 우선 검토할 인덱스:
 
 ```txt
-payment_date
+transaction_date
 merchant_id
-payment_status
-payment_type
-payment_date + merchant_id
-payment_date + merchant_id + payment_type
+status
+type
+transaction_date + merchant_id
+transaction_date + merchant_id + type
 settlement_date + merchant_id
 ```
 
@@ -1191,16 +1321,16 @@ TBD
 
 ### 완료 기준
 
-* [ ] BASIC_LOOP 처리 시간이 기록되었다.
-* [ ] GROUP_BY_QUERY 처리 시간이 기록되었다.
+* [x] BASIC_LOOP 처리 시간이 기록되었다.
+* [x] GROUP_BY_QUERY 처리 시간이 기록되었다.
 * [ ] GROUP_BY_BULK_SAVE 처리 시간이 기록되었다.
 * [ ] GROUP_BY_BULK_INDEX 처리 시간이 기록되었다.
-* [ ] README에 성능 개선 표가 추가되었다.
+* [x] README에 BASIC_LOOP와 GROUP_BY_QUERY 1차 성능 개선 표가 추가되었다.
 * [ ] PPT 제작용 요약 문장이 작성되었다.
 
 ### 메모
 
-포트폴리오의 핵심 결과물이다.
+2026-05-14 로컬 PostgreSQL에서 100,000건 기준 BASIC_LOOP 728~1043ms, GROUP_BY_QUERY 104~265ms를 반복 측정하고 README에 1차 비교 결과를 반영했다. 단일 실행값은 DB/OS 캐시와 JVM warm-up 상태에 따라 흔들릴 수 있으므로 범위로 기록한다. GROUP_BY_BULK_SAVE와 GROUP_BY_BULK_INDEX 측정은 후속 단계로 남긴다.
 
 ---
 
@@ -1276,7 +1406,7 @@ settlement/strategy
 * [x] 처리 전략 Enum이 정의되었다.
 * [ ] 공통 Strategy 인터페이스가 정의되었다.
 * [x] BASIC_LOOP 처리 processor가 분리되었다.
-* [ ] GROUP_BY_QUERY 전략이 분리되었다.
+* [x] GROUP_BY_QUERY 전략이 분리되었다.
 * [x] API에서 처리 전략을 선택할 수 있다.
 * [x] 전략별 실행 시간이 기록된다.
 
@@ -2059,13 +2189,13 @@ SYMBOL_PARTITIONED
 우선순위는 다음과 같다.
 
 ```txt
-1. TD-001 DB 설정 불일치 해결
-2. TD-002 정산 계산 테스트 추가
-3. TD-003 중복 정산 방지 테스트 추가
-4. TD-004 GROUP BY 기반 정산 개선 전략 구현
-5. TD-005 벌크 저장 최적화 구현
-6. TD-006 인덱스 적용 및 성능 비교
-7. TD-008 배치 실패 이력과 재실행 정책 정리
+1. TD-005 GROUP_BY_BULK_SAVE 구현
+2. TD-006 GROUP_BY_BULK_INDEX 구현 및 인덱스 적용 비교
+3. TD-021 EXPLAIN ANALYZE 실행 계획 확인
+4. TD-022 Payment 원천 데이터와 Settlement 결과 대사 기능 구현
+5. TD-023 RUNNING 상태 기준 중복 실행 방지
+6. TD-024 날짜 파티셔닝 고도화 항목 문서화
+7. TD-001 DB 설정 불일치 해결
 8. TD-007 DB 문서 갱신
 9. TD-009 성능 비교 결과 문서화
 10. TD-010 정산 처리 전략 구조 분리
@@ -2077,9 +2207,9 @@ SYMBOL_PARTITIONED
 현재 가장 중요한 기준은 다음이다.
 
 ```txt
-1단계에서 BASIC_LOOP 기준선만 남기지 않고,
-GROUP BY, 벌크 저장, 인덱스 적용까지 구현해
-성능 개선 전후를 수치로 보여주는 것.
+1단계에서 BASIC_LOOP 기준선과 GROUP_BY_QUERY 개선에 이어,
+벌크 저장, 인덱스 적용, 실행 계획 확인, 대사, RUNNING 중복 실행 방지까지 구현해
+성능 개선과 정합성/안정성 확보 과정을 수치와 검증 기록으로 보여주는 것.
 
 이후 2단계에서 실시간 시세 API 기반 모의 주문·체결 처리로 확장해
 증권사 특화 포트폴리오 메시지를 완성하는 것.

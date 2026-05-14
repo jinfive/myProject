@@ -17,6 +17,10 @@ public interface SettlementRepository extends JpaRepository<Settlement, Long> {
     @Query("delete from Settlement")
     int deleteAllInBulk();
 
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("delete from Settlement s where s.settlementDate = :settlementDate")
+    int deleteAllBySettlementDate(LocalDate settlementDate);
+
     @EntityGraph(attributePaths = "merchant")
     List<Settlement> findAllBySettlementDateOrderByFinalSettlementAmountDesc(LocalDate settlementDate);
 
