@@ -712,7 +712,7 @@ DB GROUP BY 집계 결과 재사용
 범위:
 
 * 이번 단계에서는 `saveAll`만 적용한다.
-* Hibernate `batch_size`, `order_inserts`, PostgreSQL JDBC `reWriteBatchedInserts=true`는 다음 단계로 분리한다.
+* Hibernate `batch_size`, `order_inserts`, PostgreSQL JDBC `reWriteBatchedInserts=true`는 100만/1000만 건 실험에서 저장 병목이 확인된 뒤 분리 검토한다.
 * GROUP_BY_BULK_INDEX와 인덱스 적용은 아직 구현하지 않는다.
 * 반복적인 save 호출 감소
 * 대량 정산 결과 저장 성능 개선
@@ -721,7 +721,7 @@ DB GROUP BY 집계 결과 재사용
 
 ### 10.4 GROUP_BY_BULK_INDEX
 
-향후 구현할 인덱스 적용 전략이다.
+향후 구현할 인덱스 적용 전략이다. 현재 10만 건 / Merchant 100개 기준에서는 GROUP_BY_QUERY만으로 충분한 개선을 확인했으므로 인덱스를 즉시 적용하지 않는다.
 
 흐름:
 
@@ -732,16 +732,19 @@ DB GROUP BY 집계 결과 재사용
 → 결과를 README와 PPT에 기록
 ```
 
-우선 고려할 인덱스:
+인덱스 적용 검토 조건:
 
 ```txt
-payment_date
-merchant_id
-payment_status
-payment_type
-payment_date + merchant_id
-payment_date + merchant_id + payment_type
-settlement_date + merchant_id
+1000만 건에서 GROUP_BY_QUERY가 수 초 이상 걸림
+EXPLAIN ANALYZE에서 payments 전체 스캔 비용이 큼
+transaction_date/status/merchant_id 조건 조회 비용이 큼
+```
+
+후보 인덱스:
+
+```sql
+create index idx_payments_transaction_date_status_merchant
+on payments (transaction_date, status, merchant_id);
 ```
 
 목적:
@@ -1169,17 +1172,19 @@ README와 PPT는 항상 `문제 → 판단 → 액션 → 검증 → 결과` 흐
 현재 기준으로 다음 순서로 작업한다.
 
 ```txt
-1. GROUP_BY_QUERY 구현
-2. BASIC_LOOP와 결과 동일성 검증
-3. GROUP_BY_BULK_SAVE 구현
-4. GROUP_BY_BULK_INDEX 구현
-5. EXPLAIN ANALYZE로 실행 계획 확인
-6. 대사 기능 추가
-7. RUNNING 중복 실행 방지
-8. 날짜 파티셔닝은 고도화 항목으로 문서화
+1. 10만 건 / Merchant 100개 기준 실험 정리
+2. 100만 건 / Merchant 5,000개 중간 확장 실험
+3. 1000만 건 / Merchant 5,000~10,000개 최종 대용량 실험
+4. 저장 병목 확인 시 Hibernate batch_size 적용 검토
+5. 저장 병목이 계속 남으면 PostgreSQL reWriteBatchedInserts 적용 검토
+6. 1000만 건 조회 병목 확인 시 GROUP_BY_BULK_INDEX 구현
+7. EXPLAIN ANALYZE로 실행 계획 확인
+8. 대사 기능 추가
+9. RUNNING 중복 실행 방지
+10. 날짜 파티셔닝은 고도화 항목으로 문서화
 ```
 
-이 순서는 임의로 바꾸지 않는다. 현재 GROUP_BY_QUERY와 BASIC_LOOP 결과 동일성 검증은 완료된 상태이므로 다음 구현 작업은 GROUP_BY_BULK_SAVE이다.
+현재 GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE 1차 saveAll 적용은 완료된 상태이다. 다음은 최적화 설정을 바로 추가하기보다 100만 건과 1000만 건으로 데이터 규모와 Merchant 수를 확장해 조회 병목과 저장 병목을 분리해서 확인하는 단계이다.
 
 ---
 

@@ -59,10 +59,16 @@ README에는 다음 흐름을 유지한다.
 → 데이터 규모
 → BASIC_LOOP 기준선
 → GROUP_BY_QUERY 개선
+→ GROUP_BY_BULK_SAVE 1차 저장 개선
 → 성능 비교
+→ 100만/1000만 건 확장 실험 계획
 → 정합성/안정성 검증
 → 다음 개선 방향
 ```
+
+현재 10만 건 / Merchant 100개 기준 실험은 완료된 기준 실험으로 관리한다. 측정값은 BASIC_LOOP 882ms, GROUP_BY_QUERY 133ms, GROUP_BY_BULK_SAVE 110ms이며, 이 결과는 Payment 전체 조회 방식의 한계와 DB GROUP BY 집계의 개선 효과를 설명하는 근거로 사용한다.
+
+다만 Merchant 수가 100개라 Settlement 저장 결과가 100건 수준에 그쳤기 때문에 saveAll 기반 저장 최적화 효과는 제한적으로만 해석한다. 다음 실험은 100만 건 / Merchant 5,000개, 이후 1000만 건 / Merchant 5,000~10,000개로 확장해 조회 병목과 저장 병목을 분리해서 확인한다.
 
 이 디렉터리에서는 같은 내용을 다음 관점으로 재정리한다.
 

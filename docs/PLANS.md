@@ -541,33 +541,33 @@ README와 PPT에 처리 시간 비교표와 개선 이유를 정리한다.
 → 배운 점
 ```
 
-앞으로의 구현 순서는 다음으로 고정한다.
+앞으로의 실험과 구현 순서는 다음으로 정리한다.
 
 ```txt
-1. GROUP_BY_QUERY 구현
-2. BASIC_LOOP와 결과 동일성 검증
-3. GROUP_BY_BULK_SAVE 1차 saveAll 적용
-4. Hibernate batch_size 적용 검토
-5. PostgreSQL reWriteBatchedInserts 적용 검토
-6. GROUP_BY_BULK_INDEX 구현
+1. 10만 건 / Merchant 100개 기준 실험 정리
+2. 100만 건 / Merchant 5,000개 중간 확장 실험
+3. 1000만 건 / Merchant 5,000~10,000개 최종 대용량 실험
+4. 저장 병목 확인 시 Hibernate batch_size 적용 검토
+5. 저장 병목이 계속 남으면 PostgreSQL reWriteBatchedInserts 적용 검토
+6. 1000만 건 조회 병목 확인 시 GROUP_BY_BULK_INDEX 구현
 7. EXPLAIN ANALYZE로 실행 계획 확인
 8. 대사 기능 추가
 9. RUNNING 중복 실행 방지
 10. 날짜 파티셔닝은 고도화 항목으로 문서화
 ```
 
-이 순서는 임의로 바꾸지 않는다. 각 단계는 독립된 개선 액션으로 관리하고, 다음 단계로 넘어가기 전에 검증 결과와 README 반영 내용을 남긴다.
+각 단계는 독립된 개선 액션으로 관리하고, 다음 단계로 넘어가기 전에 검증 결과와 README 반영 내용을 남긴다. 현재 10만 건 기준에서는 GROUP_BY_QUERY 적용만으로 충분한 성능 개선을 확인했으므로, 인덱스와 batch 설정은 바로 적용하지 않고 100만/1000만 건 측정 결과를 보고 판단한다.
 
 단계별 기준:
 
 | 순서 | 단계 | 핵심 의미 | README/PPT 기록 포인트 |
 |---:|---|---|---|
-| 1 | GROUP_BY_QUERY | Payment 전체 조회 제거, DB GROUP BY 집계 적용 | 애플리케이션으로 가져오는 데이터량을 줄였다 |
-| 2 | 결과 동일성 검증 | 성능 개선 후에도 금액 결과가 기준선과 같은지 검증 | 성능보다 정합성을 먼저 확인했다 |
-| 3 | GROUP_BY_BULK_SAVE 1차 | GROUP BY 집계는 유지하고 Settlement 저장 방식을 saveAll로 개선 | 개별 save 반복 호출을 줄이고 저장 건수와 금액 정합성을 검증했다 |
-| 4 | Hibernate batch_size | saveAll 구조에 실제 JDBC batch 설정 적용 여부 검토 | saveAll만으로 충분한지 설정 효과를 분리 측정한다 |
-| 5 | PostgreSQL reWriteBatchedInserts | PostgreSQL JDBC batch rewrite 적용 여부 검토 | 드라이버 옵션 효과가 실제로 있는지 확인한다 |
-| 6 | GROUP_BY_BULK_INDEX | 정산 조회 조건과 GROUP BY 조건에 맞는 인덱스 적용 | 조회 조건에 맞는 인덱스를 판단해 적용했다 |
+| 1 | 10만 건 기준 실험 | Payment 100,000건, Merchant 100개로 기준선과 GROUP BY 효과 확인 | GROUP_BY_QUERY가 가장 큰 개선 효과를 만들었다 |
+| 2 | 100만 건 중간 확장 | Payment 1,000,000건, Merchant 5,000개로 정합성·시간·메모리 확인 | 1000만 건 전 안정성 검증을 했다 |
+| 3 | 1000만 건 대용량 실험 | Payment 10,000,000건, Merchant 5,000~10,000개로 최종 검증 | DB GROUP BY 기반 전략 중심으로 비교했다 |
+| 4 | Hibernate batch_size | 저장 건수가 5,000건 이상 늘고 saveAll만으로 부족할 때 검토 | 저장 병목을 확인한 뒤 설정 효과를 분리 측정한다 |
+| 5 | PostgreSQL reWriteBatchedInserts | batch 설정 후에도 저장 병목이 남을 때 검토 | JDBC 드라이버 옵션 효과가 실제로 있는지 확인한다 |
+| 6 | GROUP_BY_BULK_INDEX | 1000만 건 조회 병목이 확인될 때 인덱스 적용 | 불필요한 인덱스 비용을 피하고 병목 기반으로 적용했다 |
 | 7 | EXPLAIN ANALYZE | 인덱스가 실제 실행 계획에서 사용되는지 확인 | Seq Scan/Index Scan, 실행 시간, rows 예측 차이를 확인했다 |
 | 8 | 대사 기능 | 원천 Payment와 Settlement 결과 일치 검증 | 성능 개선 후에도 결과 정합성이 유지됨을 증명했다 |
 | 9 | RUNNING 중복 실행 방지 | 같은 날짜와 같은 전략의 동시 실행 차단 | 반복 클릭과 동시 요청으로 인한 DB 부하와 충돌을 막았다 |

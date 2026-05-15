@@ -334,3 +334,47 @@ A. 집계 결과 건수, 생성 Settlement 수, 실제 저장 Settlement 수가 
 **Q. 성능 수치가 왜 흔들리나요?**
 
 A. 로컬 단일 DB에서 측정했기 때문에 DB/OS 캐시, JVM warm-up, 실행 순서 영향을 받습니다. 그래서 단일값을 성과로 과장하지 않고 반복 측정 범위와 조건을 함께 기록했습니다.
+
+---
+
+## 정산 배치 성능 실험 규모 확장 기획
+
+### 1. 문제 상황
+
+10만 건 / Merchant 100개 기준 실험에서 BASIC_LOOP 882ms, GROUP_BY_QUERY 133ms, GROUP_BY_BULK_SAVE 110ms를 확인했다. 이 결과로 Payment 전체 조회 방식의 비효율성과 DB GROUP BY 집계 개선 효과는 확인했다.
+
+하지만 Merchant 수가 100개라 Settlement 저장 결과도 100건 수준이었다. 따라서 saveAll 기반 저장 최적화 효과, Hibernate batch 설정 필요성, 인덱스 필요성을 판단하기에는 실험 규모가 작았다.
+
+### 2. 금융 관점에서 중요한 이유
+
+정산 배치는 데이터가 커질수록 조회 병목, 저장 병목, 메모리 부담, 실패 복구 리스크가 함께 커진다. 작은 데이터에서 빠르게 동작했다는 이유만으로 대용량 거래 정산에 적합하다고 설명하면 신뢰도가 낮다.
+
+### 3. 판단 기준
+
+최적화 설정을 바로 추가하기보다 데이터 규모와 Merchant 수를 늘려 병목 위치를 먼저 확인하기로 했다. 인덱스, Hibernate batch_size, PostgreSQL `reWriteBatchedInserts`, Spring Batch는 측정 결과에 따라 필요성을 판단한다.
+
+### 4. 기획 액션
+
+| 단계 | Payment 수 | Merchant 수 | 목적 | 측정 전략 |
+|---:|---:|---:|---|---|
+| 1 | 100,000 | 100 | 기준 실험 완료 | BASIC_LOOP, GROUP_BY_QUERY, GROUP_BY_BULK_SAVE |
+| 2 | 1,000,000 | 5,000 | 중간 확장 및 안정성 검증 | BASIC_LOOP, GROUP_BY_QUERY, GROUP_BY_BULK_SAVE |
+| 3 | 10,000,000 | 5,000~10,000 | 최종 대용량 검증 | GROUP_BY_QUERY, GROUP_BY_BULK_SAVE |
+
+100만 건은 1000만 건으로 가기 전 데이터 생성, 정합성, 실행 시간, 메모리 부담을 확인하는 중간 검증 단계로 둔다. 1000만 건에서는 전체 Payment를 애플리케이션으로 로딩하는 BASIC_LOOP를 필수로 보지 않고, DB GROUP BY 기반 전략 중심으로 비교한다.
+
+### 5. 검증 기준
+
+- 전략별 Settlement 수 동일
+- 전략별 총 결제금액, 총 취소금액, 최종 정산금액 동일
+- BatchJobHistory elapsedMs 기록
+- 중복 실행 방지 유지
+- 실패 시 Settlement 롤백과 BatchJobHistory FAILED 기록 유지
+
+### 6. 결과
+
+이번 작업에서는 데이터를 생성하거나 인덱스, batch 설정, Spring Batch를 적용하지 않았다. 기존 문서의 로드맵을 100만/1000만 건 실험 이후 병목 기반으로 최적화를 판단하는 방향으로 수정했다.
+
+### 7. 포트폴리오 문장
+
+10만 건 기준에서는 GROUP BY 집계만으로 충분한 성능 개선을 확인했습니다. 다만 당시 Merchant 수가 100개라 Settlement 저장 결과가 100건 수준이었고, saveAll 기반 저장 최적화의 효과를 충분히 보기 어렵다고 판단했습니다. 그래서 다음 실험에서는 Payment를 100만 건, Merchant를 5,000개로 늘려 조회 병목과 저장 병목을 함께 확인할 수 있도록 조건을 재설계했습니다.

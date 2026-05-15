@@ -132,6 +132,7 @@
 - 성능 측정 조건 불일치
 - 더미 데이터 중복 생성
 - 테스트 부족으로 계산 오류 미탐지
+- 로컬 프론트엔드와 백엔드 origin 차이로 인한 CORS preflight 실패
 
 ---
 
@@ -176,6 +177,21 @@
 - 실패 후 재실행 가능 여부를 판단할 수 있어야 한다.
 - BatchJobHistory 상태 check constraint는 `RUNNING`, `SUCCESS`, `FAILED`를 모두 허용해야 한다.
 - 기존 로컬 DB의 check constraint가 새 enum 값을 허용하지 않는 경우 이력을 삭제하지 않고 제약조건만 갱신한다.
+
+---
+
+## 5.1.1 로컬 CORS 실패
+
+로컬 개발에서 Vite 프론트엔드는 `http://localhost:5173`, Spring Boot 백엔드는 `http://localhost:8080`으로 실행된다.
+
+정산 결과 초기화는 `DELETE /api/settlements?date=...` 요청을 사용하므로 브라우저가 OPTIONS preflight를 먼저 보낸다.
+
+대응 기준:
+
+- `/api/**` CORS 허용 origin은 로컬 개발 주소로 제한한다.
+- `DELETE`와 `OPTIONS`를 허용 메서드에 포함한다.
+- CORS 설정으로 해결하되, 로그인/JWT/Spring Security 구조를 불필요하게 추가하지 않는다.
+- 정산 결과 초기화는 `settlements`만 삭제하고 `payments`, `merchants`, `batch_job_histories`는 보존한다.
 
 ---
 
@@ -721,7 +737,12 @@ GROUP_BY_BULK_INDEX
 - GROUP_BY_BULK_SAVE 1차 단계에서는 GROUP_BY_QUERY의 DB GROUP BY 집계 결과를 재사용하고, Settlement 저장 방식만 `saveAll` 기반으로 변경한다.
 - 저장 방식 변경 후에는 집계 결과 건수, 생성 Settlement 수, 실제 저장 Settlement 수가 일치하는지 검증한다.
 - BASIC_LOOP, GROUP_BY_QUERY, GROUP_BY_BULK_SAVE의 가맹점별 금액이 동일한지 검증한다.
-- `saveAll`만으로 실제 DB batch insert 효과를 단정하지 않고, Hibernate `batch_size`와 PostgreSQL `reWriteBatchedInserts=true`는 다음 단계에서 분리 검토한다.
+- 10만 건 / Merchant 100개 실험에서는 Settlement 저장 결과가 100건 수준이므로 saveAll 기반 저장 최적화 효과를 제한적으로만 해석한다.
+- 100만 건 / Merchant 5,000개 실험에서는 1000만 건으로 가기 전 정합성, 실행 시간, 메모리 부담, 저장 건수 증가 영향을 점검한다.
+- 1000만 건 / Merchant 5,000~10,000개 실험에서는 GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE 중심으로 대용량 정산 안정성과 실행 시간을 확인한다.
+- `saveAll`만으로 실제 DB batch insert 효과를 단정하지 않고, Hibernate `batch_size`와 PostgreSQL `reWriteBatchedInserts=true`는 저장 병목이 확인된 뒤 분리 검토한다.
+- 인덱스는 1000만 건에서 GROUP_BY_QUERY가 수 초 이상 걸리거나 `EXPLAIN ANALYZE`에서 `payments` 전체 스캔 비용이 크다고 확인될 때 적용을 검토한다.
+- Spring Batch는 1000만 건 실험 이후 단순 속도보다 Job/Step 이력, chunk 처리, 실패 지점 추적, 재시작 가능성 같은 운영성 관점에서 도입 여부를 판단한다.
 - 로컬 벤치마크 데이터 날짜 동기화는 Payment 전체를 Entity List로 로딩하지 않고 벌크 update/delete로 처리한다.
 - 같은 DB 설정에서 비교한다.
 - 실행 시간을 BatchJobHistory에 기록한다.
