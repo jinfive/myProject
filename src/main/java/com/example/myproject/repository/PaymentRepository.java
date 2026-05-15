@@ -37,15 +37,22 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
             select new com.example.myproject.repository.PaymentSettlementAggregation(
                 m,
                 m.feeRate,
-                coalesce(sum(case when p.type = :paymentType then p.amount else 0 end), 0),
-                coalesce(sum(case when p.type = :cancelType then p.amount else 0 end), 0),
-                count(p)
+                agg.totalPaymentAmount,
+                agg.totalCancelAmount,
+                agg.processedCount
             )
-            from Payment p
-            join p.merchant m
-            where p.transactionDate = :transactionDate
-              and p.status = :status
-            group by m, m.feeRate
+            from (
+                select
+                    p.merchant.id as merchantId,
+                    coalesce(sum(case when p.type = :paymentType then p.amount else 0 end), 0) as totalPaymentAmount,
+                    coalesce(sum(case when p.type = :cancelType then p.amount else 0 end), 0) as totalCancelAmount,
+                    count(p) as processedCount
+                from Payment p
+                where p.transactionDate = :transactionDate
+                  and p.status = :status
+                group by p.merchant.id
+            ) agg
+            join Merchant m on m.id = agg.merchantId
             order by m.id
             """)
     List<PaymentSettlementAggregation> aggregateCompletedPaymentsByMerchant(
