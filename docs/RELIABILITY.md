@@ -738,7 +738,10 @@ GROUP_BY_BULK_INDEX
 - 저장 방식 변경 후에는 집계 결과 건수, 생성 Settlement 수, 실제 저장 Settlement 수가 일치하는지 검증한다.
 - BASIC_LOOP, GROUP_BY_QUERY, GROUP_BY_BULK_SAVE의 가맹점별 금액이 동일한지 검증한다.
 - 10만 건 / Merchant 100개 실험에서는 Settlement 저장 결과가 100건 수준이므로 saveAll 기반 저장 최적화 효과를 제한적으로만 해석한다.
-- 100만 건 / Merchant 5,000개 실험에서는 1000만 건으로 가기 전 정합성, 실행 시간, 메모리 부담, 저장 건수 증가 영향을 점검한다.
+- 100만 건 / Merchant 5,000개 benchmark-medium 실험에서는 1000만 건으로 가기 전 정합성, 실행 시간, 메모리 부담, 저장 건수 증가 영향을 점검한다.
+- benchmark-medium 데이터셋은 기존 benchmark 데이터에 추가하지 않고 `settlements`, `payments`, `merchants`를 초기화한 뒤 재생성한다.
+- benchmark-medium 재생성 시에도 `batch_job_histories`는 실행 이력이므로 보존한다.
+- 100만 건 기준 측정에서는 BASIC_LOOP 8,253ms, GROUP_BY_QUERY 899ms, GROUP_BY_BULK_SAVE 798ms로 기록되었고, 전략별 Settlement 5,000건과 합계 금액이 동일했다.
 - 1000만 건 / Merchant 5,000~10,000개 실험에서는 GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE 중심으로 대용량 정산 안정성과 실행 시간을 확인한다.
 - `saveAll`만으로 실제 DB batch insert 효과를 단정하지 않고, Hibernate `batch_size`와 PostgreSQL `reWriteBatchedInserts=true`는 저장 병목이 확인된 뒤 분리 검토한다.
 - 인덱스는 1000만 건에서 GROUP_BY_QUERY가 수 초 이상 걸리거나 `EXPLAIN ANALYZE`에서 `payments` 전체 스캔 비용이 크다고 확인될 때 적용을 검토한다.

@@ -755,6 +755,36 @@ on payments (transaction_date, status, merchant_id);
 
 ---
 
+### 10.5 benchmark-medium 데이터셋
+
+100만 건 중간 확장 실험을 위해 `benchmark-medium` 프로파일을 추가했다.
+
+조건:
+
+```txt
+Merchant: 5,000개
+Payment: 1,000,000건
+Settlement 예상: 전략별 최대 5,000건
+정산일자: 실행일 기준 오늘
+```
+
+재생성 정책:
+
+```txt
+benchmark.reset-enabled=true
+→ settlements 삭제
+→ payments 삭제
+→ merchants 삭제
+→ merchants 5,000개 생성
+→ payments 1,000,000건 생성
+```
+
+`batch_job_histories`는 실행 이력이므로 삭제하지 않는다. 이 기능은 운영 기능이 아니라 로컬 벤치마크용 데이터 재생성 기능이며, 기본 실행에서는 비활성화되어 있다.
+
+기존 10만 건 데이터에 90만 건을 단순 추가하지 않는 이유는 Merchant 분포가 섞이면 조회 병목과 저장 병목을 비교하는 조건이 불명확해지기 때문이다.
+
+---
+
 ## 11. 데이터 정합성 원칙
 
 금융 프로젝트에서 정합성은 가장 중요한 기준 중 하나이다.

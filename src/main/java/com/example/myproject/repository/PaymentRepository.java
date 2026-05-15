@@ -12,6 +12,10 @@ import org.springframework.data.jpa.repository.Query;
 
 public interface PaymentRepository extends JpaRepository<Payment, Long> {
 
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("delete from Payment")
+    int deleteAllInBulk();
+
     long countByTransactionDate(LocalDate transactionDate);
 
     boolean existsByTransactionDateNot(LocalDate transactionDate);

@@ -219,6 +219,24 @@ http://127.0.0.1:5173
 
 ---
 
+## 6.1.2 로컬 benchmark 데이터 재생성 통제
+
+benchmark-medium 데이터셋은 로컬 성능 측정을 위한 기능이며 운영 기능이 아니다.
+
+재생성 시 다음 데이터가 삭제된다.
+
+```txt
+settlements
+payments
+merchants
+```
+
+`batch_job_histories`는 실행 이력이므로 삭제하지 않는다.
+
+이 기능은 기본 실행에서 비활성화하고, `benchmark-medium` 프로파일과 `benchmark.reset-enabled=true` 설정이 명시된 경우에만 실행한다. 외부 공개 환경이나 운영 환경에서는 benchmark reset 설정을 켜지 않는다.
+
+---
+
 ## 6.2 2단계에서 보호가 필요한 API
 
 2단계에서 다음 API는 보호 대상이다.

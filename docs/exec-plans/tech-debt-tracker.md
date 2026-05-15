@@ -219,7 +219,7 @@
 | TD-024 | 날짜 파티셔닝 고도화 항목 문서화 필요                  | Open | P2   | Medium | TBD | 2026-05-13 | TBD |
 | TD-025 | Hibernate batch_size와 reWriteBatchedInserts 적용 검토                  | Open | P1   | High   | TBD | 2026-05-14 | TBD |
 | TD-026 | 정산 결과 초기화 DELETE 요청 CORS preflight 실패                  | Resolved | P1   | High   | TBD | 2026-05-14 | 2026-05-14 |
-| TD-027 | 100만/1000만 건 정산 배치 성능 확장 실험 미완료                  | Open | P1   | High   | TBD | 2026-05-15 | TBD |
+| TD-027 | 100만/1000만 건 정산 배치 성능 확장 실험 미완료                  | In Progress | P1   | High   | TBD | 2026-05-15 | TBD |
 
 ---
 
@@ -1047,7 +1047,7 @@ reWriteBatchedInserts=true
 
 ### 상태
 
-Open
+In Progress
 
 ### 우선순위
 
@@ -1099,11 +1099,23 @@ TBD
 
 100만 건에서는 1000만 건으로 가기 전 데이터 생성, 정합성, 실행 시간, 메모리 부담을 점검한다. 1000만 건에서는 BASIC_LOOP를 필수로 보지 않고, 전체 Payment를 애플리케이션으로 로딩하는 방식이 비효율적이면 생략하거나 중단 결과를 기록한다.
 
+2026-05-15에 benchmark-medium 프로파일을 구현해 Merchant 5,000개, Payment 1,000,000건을 오늘 날짜 기준으로 재생성했다. 기존 `settlements`, `payments`, `merchants`는 초기화하고 `batch_job_histories`는 보존했다.
+
+측정 결과:
+
+| 데이터 건수 | Merchant 수 | 전략 | 실행 시간 | 결과 동일성 |
+|---:|---:|---|---:|---|
+| 1,000,000 | 5,000 | BASIC_LOOP | 8,253ms | 기준 |
+| 1,000,000 | 5,000 | GROUP_BY_QUERY | 899ms | BASIC_LOOP와 동일 |
+| 1,000,000 | 5,000 | GROUP_BY_BULK_SAVE | 798ms | BASIC_LOOP와 동일 |
+
+세 전략 모두 Settlement 5,000건을 생성했고 총 결제금액, 총 취소금액, 총 수수료, 총 정산금액이 동일했다.
+
 ### 완료 기준
 
-* [ ] 100만 건 / Merchant 5,000개 실험 데이터 조건을 구성했다.
-* [ ] 전략별 Settlement 수와 금액 정합성을 확인했다.
-* [ ] BatchJobHistory elapsedMs 기준 실행 시간을 기록했다.
+* [x] 100만 건 / Merchant 5,000개 실험 데이터 조건을 구성했다.
+* [x] 전략별 Settlement 수와 금액 정합성을 확인했다.
+* [x] BatchJobHistory elapsedMs 기준 실행 시간을 기록했다.
 * [ ] 1000만 건 / Merchant 5,000~10,000개 실험 조건을 구성했다.
 * [ ] 인덱스, batch_size, reWriteBatchedInserts, Spring Batch 적용 여부를 측정 결과 기반으로 판단했다.
 
