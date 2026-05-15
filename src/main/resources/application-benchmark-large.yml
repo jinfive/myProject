@@ -1,0 +1,7 @@
+benchmark:
+  profile: large
+  reset-enabled: true
+  merchant-count: 10000
+  payment-count: 10000000
+  batch-size: 1000
+  target-date-sync-enabled: true

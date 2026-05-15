@@ -564,7 +564,7 @@ README와 PPT에 처리 시간 비교표와 개선 이유를 정리한다.
 |---:|---|---|---|
 | 1 | 10만 건 기준 실험 | Payment 100,000건, Merchant 100개로 기준선과 GROUP BY 효과 확인 | GROUP_BY_QUERY가 가장 큰 개선 효과를 만들었다 |
 | 2 | 100만 건 중간 확장 | Payment 1,000,000건, Merchant 5,000개로 정합성·시간·메모리 확인 | BASIC_LOOP 8,253ms, GROUP_BY_QUERY 899ms, GROUP_BY_BULK_SAVE 798ms를 측정했다 |
-| 3 | 1000만 건 대용량 실험 | Payment 10,000,000건, Merchant 5,000~10,000개로 최종 검증 | DB GROUP BY 기반 전략 중심으로 비교했다 |
+| 3 | 1000만 건 대용량 실험 | Payment 10,000,000건, Merchant 10,000개로 최종 검증 | GROUP_BY_QUERY 5,026ms, GROUP_BY_BULK_SAVE 4,596ms를 측정했다 |
 | 4 | Hibernate batch_size | 저장 건수가 5,000건 이상 늘고 saveAll만으로 부족할 때 검토 | 저장 병목을 확인한 뒤 설정 효과를 분리 측정한다 |
 | 5 | PostgreSQL reWriteBatchedInserts | batch 설정 후에도 저장 병목이 남을 때 검토 | JDBC 드라이버 옵션 효과가 실제로 있는지 확인한다 |
 | 6 | GROUP_BY_BULK_INDEX | 1000만 건 조회 병목이 확인될 때 인덱스 적용 | 불필요한 인덱스 비용을 피하고 병목 기반으로 적용했다 |
