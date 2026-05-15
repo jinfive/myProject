@@ -555,3 +555,39 @@ order by agg.merchant_id;
 ### 7. 포트폴리오 설명
 
 1000만 건 정산 쿼리의 실행계획을 확인한 결과, 기존에는 payments와 merchants를 먼저 조인한 뒤 집계해 중간 데이터가 커지고 temp spill이 많이 발생했습니다. 이를 줄이기 위해 payments를 먼저 merchant_id 기준으로 집계한 뒤, 집계 결과만 merchants와 조인하도록 쿼리 구조를 변경했습니다. 그 결과 temp written이 92,954에서 47,200으로 줄었고, GROUP_BY_QUERY API 실행 시간도 5,026ms에서 4,796ms로 개선되었습니다.
+
+---
+
+## 1000만 건 GROUP BY 병목 개선 방향
+
+### 1. 문제 상황
+
+개선된 GROUP_BY_QUERY는 payments를 먼저 `merchant_id` 기준으로 집계한 뒤 merchants와 조인한다. 개선 후에도 benchmark-large 데이터가 `2026-05-15` 단일 날짜에 1000만 건 몰려 있어 `payments`를 대부분 `Parallel Seq Scan`으로 읽고, `HashAggregate` 과정에서 temp disk spill이 남아 있다.
+
+### 2. 판단
+
+현재 데이터는 `status`가 모두 `COMPLETED`라 partial index는 선택도를 크게 줄이지 못할 가능성이 높다. 따라서 바로 인덱스를 추가하기보다, temp spill과 전체 스캔 비용을 분리해서 확인한 뒤 다음 개선을 선택한다.
+
+### 3. 다음 개선 순서
+
+| 순서 | 개선 후보 | 목적 | 확인 항목 |
+|---:|---|---|---|
+| 1 | 세션 단위 `work_mem` 실험 | HashAggregate temp spill 감소 확인 | temp read/write, HashAggregate batches, Execution Time |
+| 2 | 일반 covering index 실험 | heap read 감소와 Index Only Scan 가능성 확인 | Scan 방식, Buffers read/hit, Execution Time |
+| 3 | 날짜 분산 데이터셋 또는 사전 집계 테이블 | 1000만 건 전체 스캔 비용이 계속 클 때 구조 대안 검토 | 날짜 선택도, 집계 대상 row 수, 실행 시간 |
+
+covering index 후보는 다음과 같이 검토한다.
+
+```sql
+create index idx_payments_settlement_covering
+on payments (transaction_date, status, merchant_id, type)
+include (amount);
+```
+
+### 4. 이번 단계에서 하지 않은 것
+
+- `work_mem` 설정 적용
+- 인덱스 생성
+- 날짜 분산 데이터 생성
+- 사전 집계 테이블 구현
+- Spring Batch 도입

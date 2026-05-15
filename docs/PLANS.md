@@ -564,7 +564,7 @@ README와 PPT에 처리 시간 비교표와 개선 이유를 정리한다.
 |---:|---|---|---|
 | 1 | 10만 건 기준 실험 | Payment 100,000건, Merchant 100개로 기준선과 GROUP BY 효과 확인 | GROUP_BY_QUERY가 가장 큰 개선 효과를 만들었다 |
 | 2 | 100만 건 중간 확장 | Payment 1,000,000건, Merchant 5,000개로 정합성·시간·메모리 확인 | BASIC_LOOP 8,253ms, GROUP_BY_QUERY 899ms, GROUP_BY_BULK_SAVE 798ms를 측정했다 |
-| 3 | 1000만 건 대용량 실험 | Payment 10,000,000건, Merchant 10,000개로 최종 검증 | GROUP_BY_QUERY 5,026ms, GROUP_BY_BULK_SAVE 4,596ms를 측정했다 |
+| 3 | 1000만 건 대용량 실험 | Payment 10,000,000건, Merchant 10,000개로 최종 검증 | 쿼리 구조 개선 후 GROUP_BY_QUERY 4,796ms, GROUP_BY_BULK_SAVE 4,149ms를 측정했다 |
 | 4 | Hibernate batch_size | 저장 건수가 5,000건 이상 늘고 saveAll만으로 부족할 때 검토 | 저장 병목을 확인한 뒤 설정 효과를 분리 측정한다 |
 | 5 | PostgreSQL reWriteBatchedInserts | batch 설정 후에도 저장 병목이 남을 때 검토 | JDBC 드라이버 옵션 효과가 실제로 있는지 확인한다 |
 | 6 | GROUP_BY_BULK_INDEX | 1000만 건 조회 병목이 확인될 때 인덱스 적용 | 불필요한 인덱스 비용을 피하고 병목 기반으로 적용했다 |
@@ -574,6 +574,16 @@ README와 PPT에 처리 시간 비교표와 개선 이유를 정리한다.
 | 10 | 날짜 파티셔닝 문서화 | 장기 데이터 누적에 대비한 확장 방향 정리 | 실제 구현이 아니라 고도화 항목으로 남겼다 |
 
 작업별 README 기록 형식:
+
+1000만 건 실행계획 기준 다음 개선 순서는 다음으로 관리한다.
+
+| 순서 | 개선 후보 | 확인할 병목 | 판단 기준 |
+|---:|---|---|---|
+| 1 | 세션 단위 `work_mem` 실험 | `HashAggregate` temp disk spill | temp read/write, HashAggregate batches, Execution Time 감소 여부 |
+| 2 | 일반 covering index 실험 | `payments` heap read와 전체 스캔 비용 | `Index Only Scan` 가능성, Buffers read/hit, Execution Time 변화 |
+| 3 | 날짜 분산 데이터셋 또는 사전 집계 테이블 | 단일 날짜 1000만 건 전체 스캔 | 날짜 조건의 선택도 확보 여부 또는 사전 집계 필요성 |
+
+현재 benchmark-large 데이터는 `2026-05-15` 단일 날짜에 1000만 건이 몰려 있고 `status`가 모두 `COMPLETED`라 partial index 효과는 낮을 가능성이 크다. 따라서 인덱스를 바로 추가하지 않고, 먼저 `work_mem` 세션 실험과 일반 covering index 실험으로 병목을 분리해 확인한다.
 
 ```md
 ## 진행 기록
