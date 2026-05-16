@@ -322,6 +322,8 @@ include (amount);
 
 실행계획은 인덱스 생성 후에도 `payments` `Parallel Seq Scan`을 유지했고, `Index Scan` 또는 `Index Only Scan`은 사용되지 않았다. 현재 benchmark-large 데이터는 단일 날짜에 1000만 건이 몰려 있고 `status`도 모두 `COMPLETED`라 조건 선택도가 낮다. 따라서 이번 covering index는 API 실행 시간에서 소폭 개선처럼 보이는 값은 있었지만, 실행계획상 heap read 감소나 인덱스 사용 효과는 확인되지 않았다. 실험용 인덱스 유지 여부는 별도 판단이 필요하다.
 
+이 실험은 인덱스가 항상 성능을 높인다는 전제가 맞지 않음을 확인한 사례다. EXPLAIN으로 병목을 확인한 뒤 heap read 감소와 Index Only Scan 가능성을 가설로 세웠지만, 실제 데이터 분포에서는 PostgreSQL이 전체 병렬 스캔을 더 효율적인 계획으로 선택했다. 다음 개선 방향은 날짜 분산 데이터셋으로 조건 선택도를 다시 검증하거나, 정산일자·가맹점 단위 사전 집계 테이블을 검토하는 것이다.
+
 API 목록:
 
 ```text
