@@ -302,6 +302,26 @@ work_mem 128MB를 백엔드 DB 커넥션에 적용할 때는 DBeaver/psql 세션
 
 3회 평균 기준으로 128MB 적용 시 temp spill이 제거됐고 EXPLAIN과 API 실행 시간이 모두 줄었다. API 측정에서 두 전략의 정산 합계도 동일했다. 다만 전역 `work_mem` 변경은 하지 않고, 다음 단계에서는 covering index로 heap read와 전체 스캔 비용을 확인한다.
 
+### covering index 실험 결과
+
+아래 covering index를 생성한 뒤 `ANALYZE payments`를 실행하고, 같은 조건에서 3회 평균을 비교했다.
+
+```sql
+create index idx_payments_settlement_covering
+on payments (transaction_date, status, merchant_id, type)
+include (amount);
+```
+
+| 항목 | 인덱스 적용 전 평균 | 인덱스 적용 후 평균 | 개선 효과 |
+|---|---:|---:|---:|
+| EXPLAIN 실행 시간 | 2,958.553ms | 2,647.294ms | 311.259ms |
+| API GROUP_BY_QUERY | 3,642.333ms | 3,534.333ms | 108.000ms |
+| API GROUP_BY_BULK_SAVE | 3,369.333ms | 3,302.333ms | 67.000ms |
+| Buffers read | 98,568 | 99,117 | -549 |
+| temp written | 0 | 0 | 0 |
+
+실행계획은 인덱스 생성 후에도 `payments` `Parallel Seq Scan`을 유지했고, `Index Scan` 또는 `Index Only Scan`은 사용되지 않았다. 현재 benchmark-large 데이터는 단일 날짜에 1000만 건이 몰려 있고 `status`도 모두 `COMPLETED`라 조건 선택도가 낮다. 따라서 이번 covering index는 API 실행 시간에서 소폭 개선처럼 보이는 값은 있었지만, 실행계획상 heap read 감소나 인덱스 사용 효과는 확인되지 않았다. 실험용 인덱스 유지 여부는 별도 판단이 필요하다.
+
 API 목록:
 
 ```text

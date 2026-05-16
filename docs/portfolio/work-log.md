@@ -654,3 +654,41 @@ psql 또는 DBeaver 세션에서 `SET work_mem`을 실행해도 백엔드 API가
 ### 5. 판단
 
 3회 평균 기준으로 128MB 적용 시 temp spill이 제거됐고 EXPLAIN과 API 실행 시간이 모두 줄었다. 다만 전역 work_mem 변경은 보류하고, 다음 작업은 covering index로 heap read와 전체 스캔 비용을 확인하는 방향으로 둔다.
+
+---
+
+## covering index 성능 실험
+
+### 1. 문제 상황
+
+`work_mem=128MB` 적용 후 HashAggregate temp spill은 제거됐지만, GROUP_BY_QUERY는 여전히 `payments` 1000만 건을 `Parallel Seq Scan`으로 읽었다. 남은 병목이 heap read와 전체 스캔 비용인지 확인하기 위해 covering index를 실험했다.
+
+### 2. 적용한 인덱스
+
+```sql
+create index idx_payments_settlement_covering
+on payments (transaction_date, status, merchant_id, type)
+include (amount);
+```
+
+### 3. 결과
+
+| 항목 | 인덱스 적용 전 평균 | 인덱스 적용 후 평균 | 개선 효과 |
+|---|---:|---:|---:|
+| EXPLAIN 실행 시간 | 2,958.553ms | 2,647.294ms | 311.259ms |
+| API GROUP_BY_QUERY | 3,642.333ms | 3,534.333ms | 108.000ms |
+| API GROUP_BY_BULK_SAVE | 3,369.333ms | 3,302.333ms | 67.000ms |
+| Buffers read | 98,568 | 99,117 | -549 |
+| temp written | 0 | 0 | 0 |
+
+### 4. 실행계획 비교
+
+인덱스 생성 후에도 `payments`는 `Parallel Seq Scan`을 사용했다. `Index Scan` 또는 `Index Only Scan`은 발생하지 않았고, 따라서 `Heap Fetches` 비교 대상도 없었다. HashAggregate는 `Batches: 1`로 유지됐고 temp read/write는 없었다.
+
+### 5. 판단
+
+현재 benchmark-large 데이터는 `2026-05-15` 단일 날짜에 1000만 건이 몰려 있고 `status`가 모두 `COMPLETED`라 조건 선택도가 낮다. 이 조건에서는 covering index가 선택되지 않아 heap read 감소 효과를 확인하지 못했다. API 평균은 소폭 줄었지만 Buffers read는 줄지 않았으므로, 성능 차이는 캐시와 실행 변동 영향일 가능성이 있다. 다음 판단은 실험용 인덱스 유지 또는 drop 여부를 정한 뒤, 날짜 분산 데이터셋이나 사전 집계 테이블 중 하나를 선택하는 것이다.
+
+### 6. 정합성 확인
+
+모든 API 측정에서 `processedCount`는 10,000,000건, Settlement 수는 10,000건이었다. GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE의 총 결제금액, 총 취소금액, 총 수수료, 총 정산금액은 동일했다.
