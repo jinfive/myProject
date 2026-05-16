@@ -587,6 +587,8 @@ README와 PPT에 처리 시간 비교표와 개선 이유를 정리한다.
 
 `work_mem` 세션 실험에서는 기본 4MB에서 HashAggregate가 5 batches로 temp read/write를 발생시켰고, 64MB부터 batches 1과 temp read/write 0을 확인했다. 128MB는 2,645.038ms, 256MB는 2,645.408ms로 차이가 거의 없었으므로 다음 개선 후보는 일반 covering index 실험으로 둔다.
 
+GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE는 같은 GROUP BY 집계 쿼리를 사용하며, benchmark-large API 기준 차이는 4,796ms와 4,149ms로 약 647ms였다. 저장 방식 차이는 확인됐지만, 실행계획에서 GROUP_BY_QUERY 집계 쿼리만 약 2,979ms가 걸렸고 temp spill과 Parallel Seq Scan이 확인됐으므로 현재 병목 우선순위는 저장보다 조회/집계 개선으로 둔다.
+
 ```md
 ## 진행 기록
 
