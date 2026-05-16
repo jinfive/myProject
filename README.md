@@ -291,6 +291,17 @@ include (amount);
 
 64MB부터 HashAggregate temp spill이 사라졌다. 128MB와 256MB의 차이는 거의 없어, 다음 실험에서는 과도한 메모리 확대보다 covering index로 heap read와 전체 스캔 비용을 줄일 수 있는지 확인한다. 이 결과는 전역 `work_mem` 변경이 아니라 세션 단위 실험 결과로만 기록한다.
 
+work_mem 128MB를 백엔드 DB 커넥션에 적용할 때는 DBeaver/psql 세션의 `SET`이 아니라 PostgreSQL JDBC URL 세션 옵션으로 서버를 재실행해 API를 측정했다. 아래 값은 각 항목을 3회 반복 측정한 평균이다.
+
+| 항목 | work_mem 적용 전 | work_mem 적용 후 | 개선 효과 |
+|---|---:|---:|---:|
+| EXPLAIN 실행 시간 | 3,159.873ms | 2,458.106ms | 701.767ms |
+| API GROUP_BY_QUERY | 4,203.667ms | 3,399.333ms | 804.334ms |
+| API GROUP_BY_BULK_SAVE | 3,879.333ms | 3,283.333ms | 596.000ms |
+| temp written | 46,805 | 0 | 46,805 감소 |
+
+3회 평균 기준으로 128MB 적용 시 temp spill이 제거됐고 EXPLAIN과 API 실행 시간이 모두 줄었다. API 측정에서 두 전략의 정산 합계도 동일했다. 다만 전역 `work_mem` 변경은 하지 않고, 다음 단계에서는 covering index로 heap read와 전체 스캔 비용을 확인한다.
+
 API 목록:
 
 ```text

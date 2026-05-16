@@ -625,3 +625,32 @@ include (amount);
 - 인덱스 생성
 - 날짜 분산 데이터 생성
 - 사전 집계 테이블 구현
+
+---
+
+## work_mem 128MB 적용 전후 3회 평균 재측정
+
+### 1. 문제 상황
+
+psql 또는 DBeaver 세션에서 `SET work_mem`을 실행해도 백엔드 API가 사용하는 DB 커넥션에는 적용되지 않는다. 따라서 API 성능 비교는 백엔드 DB 커넥션에 work_mem이 적용되는 방식으로 다시 측정해야 했다.
+
+### 2. 적용 방식
+
+전역 설정이나 `postgresql.conf`는 수정하지 않았다. 기본값 측정은 일반 JDBC URL로 서버를 실행했고, 128MB 측정은 PostgreSQL JDBC URL의 세션 옵션 `options=-c work_mem=128MB`로 서버를 재실행했다. 각 항목은 3회 반복 측정 후 평균값으로 기록했다.
+
+### 3. 결과
+
+| 항목 | work_mem 적용 전 | work_mem 적용 후 | 개선 효과 |
+|---|---:|---:|---:|
+| EXPLAIN 실행 시간 | 3,159.873ms | 2,458.106ms | 701.767ms |
+| API GROUP_BY_QUERY | 4,203.667ms | 3,399.333ms | 804.334ms |
+| API GROUP_BY_BULK_SAVE | 3,879.333ms | 3,283.333ms | 596.000ms |
+| temp written | 46,805 | 0 | 46,805 감소 |
+
+### 4. 정합성 확인
+
+모든 API 측정에서 `processedCount`는 10,000,000건, Settlement 수는 10,000건이었다. GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE의 총 결제금액, 총 취소금액, 총 수수료, 총 정산금액은 동일했다.
+
+### 5. 판단
+
+3회 평균 기준으로 128MB 적용 시 temp spill이 제거됐고 EXPLAIN과 API 실행 시간이 모두 줄었다. 다만 전역 work_mem 변경은 보류하고, 다음 작업은 covering index로 heap read와 전체 스캔 비용을 확인하는 방향으로 둔다.
