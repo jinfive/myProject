@@ -591,3 +591,35 @@ include (amount);
 - 날짜 분산 데이터 생성
 - 사전 집계 테이블 구현
 - Spring Batch 도입
+
+---
+
+## work_mem 세션 단위 GROUP BY temp spill 실험
+
+### 1. 문제 상황
+
+1000만 건 GROUP_BY_QUERY 실행계획에서 `payments` Parallel Seq Scan은 유지됐고, `merchant_id` 기준 HashAggregate 과정에서 temp disk spill이 발생했다. 기본 `work_mem`은 4MB였다.
+
+### 2. 판단
+
+전역 설정을 바꾸기 전에 현재 DB 세션에서만 `SET work_mem`을 적용해 temp spill 감소 여부를 확인했다. 비교 항목은 Execution Time, HashAggregate batches, temp read/write, Buffers hit/read로 제한했다.
+
+### 3. 결과
+
+| work_mem | Execution Time | HashAggregate Batches | temp read | temp written | Buffers hit/read |
+|---:|---:|---:|---:|---:|---:|
+| 4MB | 4,295.640ms | 5 | 26,516 | 46,759 | 13,363 / 100,170 |
+| 64MB | 2,874.350ms | 1 | 0 | 0 | 13,459 / 100,074 |
+| 128MB | 2,645.038ms | 1 | 0 | 0 | 13,555 / 99,978 |
+| 256MB | 2,645.408ms | 1 | 0 | 0 | 13,651 / 99,882 |
+
+### 4. 판단 결과
+
+64MB부터 HashAggregate temp spill이 제거됐다. 128MB와 256MB는 실행 시간 차이가 거의 없어, 무조건 큰 값을 적용하기보다 동시 실행 수와 DB 메모리 여유를 함께 고려해야 한다. 다음 개선은 covering index 실험으로 heap read와 1000만 건 전체 스캔 비용을 줄일 수 있는지 확인한다.
+
+### 5. 이번 단계에서 하지 않은 것
+
+- 전역 `work_mem` 변경
+- 인덱스 생성
+- 날짜 분산 데이터 생성
+- 사전 집계 테이블 구현

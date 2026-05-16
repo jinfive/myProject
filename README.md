@@ -276,6 +276,19 @@ include (amount);
 
 3. 그래도 1000만 건 전체 스캔 비용이 크면 날짜 분산 데이터셋 또는 사전 집계 테이블 도입을 검토한다.
 
+### work_mem 세션 단위 실험 결과
+
+`SET work_mem`을 현재 DB 세션에만 적용해 GROUP_BY_QUERY 실행계획을 비교했다. 전역 설정은 변경하지 않았다.
+
+| work_mem | Execution Time | HashAggregate Batches | temp read | temp written | Buffers hit/read |
+|---:|---:|---:|---:|---:|---:|
+| 4MB | 4,295.640ms | 5 | 26,516 | 46,759 | 13,363 / 100,170 |
+| 64MB | 2,874.350ms | 1 | 0 | 0 | 13,459 / 100,074 |
+| 128MB | 2,645.038ms | 1 | 0 | 0 | 13,555 / 99,978 |
+| 256MB | 2,645.408ms | 1 | 0 | 0 | 13,651 / 99,882 |
+
+64MB부터 HashAggregate temp spill이 사라졌다. 128MB와 256MB의 차이는 거의 없어, 다음 실험에서는 과도한 메모리 확대보다 covering index로 heap read와 전체 스캔 비용을 줄일 수 있는지 확인한다.
+
 API 목록:
 
 ```text

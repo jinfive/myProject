@@ -585,6 +585,8 @@ README와 PPT에 처리 시간 비교표와 개선 이유를 정리한다.
 
 현재 benchmark-large 데이터는 `2026-05-15` 단일 날짜에 1000만 건이 몰려 있고 `status`가 모두 `COMPLETED`라 partial index 효과는 낮을 가능성이 크다. 따라서 인덱스를 바로 추가하지 않고, 먼저 `work_mem` 세션 실험과 일반 covering index 실험으로 병목을 분리해 확인한다.
 
+`work_mem` 세션 실험에서는 기본 4MB에서 HashAggregate가 5 batches로 temp read/write를 발생시켰고, 64MB부터 batches 1과 temp read/write 0을 확인했다. 128MB는 2,645.038ms, 256MB는 2,645.408ms로 차이가 거의 없었으므로 다음 개선 후보는 일반 covering index 실험으로 둔다.
+
 ```md
 ## 진행 기록
 
