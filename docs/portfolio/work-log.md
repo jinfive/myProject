@@ -793,11 +793,12 @@ create index idx_payments_transaction_date
 on payments (transaction_date);
 ```
 
-2차 실험은 다음 인덱스로 where 조건과 group by 기준까지 고려했을 때 더 좋아지는지 확인한다. `status`는 현재 선택도가 낮을 수 있지만 정산 쿼리 조건에 포함되므로 실험 가치가 있다.
+2차 실험은 1차 날짜 단독 인덱스 결과를 본 뒤, where 조건과 group by 기준, 집계 컬럼까지 고려한 covering index로 진행한다.
 
 ```sql
-create index idx_payments_date_status_merchant
-on payments (transaction_date, status, merchant_id);
+create index idx_payments_settlement_covering
+on payments (transaction_date, status, merchant_id, type)
+include (amount);
 ```
 
 판단 기준은 Execution Time, Scan 방식, `Parallel Seq Scan` 유지 여부, `Index Scan` 또는 `Bitmap Index Scan` 사용 여부, Rows Removed by Filter, Buffers hit/read, temp read/write, API `GROUP_BY_QUERY`, API `GROUP_BY_BULK_SAVE`, 정산 합계 동일성이다. 이번 작업에서는 실제 인덱스 생성, 성능 측정, `work_mem` 변경은 하지 않는다.
@@ -833,7 +834,9 @@ on payments (transaction_date);
 | Buffers hit/read | 14,537 / 88,572 | 314 / 103,070 | read 증가 |
 | temp read/write | 848.667 / 1,903.000 | 825.000 / 1,880.667 | 큰 변화 없음 |
 
-실행계획은 `Parallel Seq Scan`에서 `idx_payments_transaction_date` 기반 `Bitmap Index Scan`과 `Bitmap Heap Scan`으로 바뀌었다. `Rows Removed by Filter`는 약 967만 건에서 0건으로 줄었지만, heap block read가 줄지 않아 3회 평균 기준 성능 개선은 확인되지 않았다.
+실행계획은 `Parallel Seq Scan`에서 `idx_payments_transaction_date` 기반 `Bitmap Index Scan`과 `Bitmap Heap Scan`으로 바뀌었다. `Rows Removed by Filter`는 약 967만 건에서 0건으로 줄어 날짜 조건 필터링에는 성공했다. 그러나 Bitmap Heap Scan으로 테이블 본문 접근이 늘었고, Buffers read가 88,572에서 103,070으로 증가했다. 결과적으로 3회 평균 기준 API 성능은 오히려 악화됐다.
+
+따라서 `transaction_date` 단독 인덱스만으로는 현재 정산 쿼리 개선에 적합하지 않다고 판단한다. 이 결과는 실패가 아니라, 인덱스가 항상 성능 개선으로 이어지지 않으며 쿼리 조건과 필요한 컬럼을 함께 고려해야 한다는 검증 결과다.
 
 ### 5. 정합성
 
@@ -841,4 +844,19 @@ on payments (transaction_date);
 
 ### 6. 다음 방향
 
-날짜 단독 인덱스는 실행계획상 선택됐지만 성능 개선으로 이어지지 않았다. 다음 단계에서는 예정대로 `payments(transaction_date, status, merchant_id)` 복합 인덱스를 실험해 where 조건과 group by 기준까지 포함했을 때 heap read와 실행 시간이 개선되는지 확인한다.
+날짜 단독 인덱스는 실행계획상 선택됐지만 성능 개선으로 이어지지 않았다. 다음 단계에서는 정산 쿼리에 필요한 조건과 집계 컬럼을 더 반영한 covering index를 실험해 heap read와 실행 시간이 개선되는지 확인한다.
+
+실험 후 날짜 단독 인덱스는 제거하고 `ANALYZE payments`를 실행했다. 현재 `payments`에는 `payments_pkey`만 남겨 둔다.
+
+```sql
+drop index if exists idx_payments_transaction_date;
+analyze payments;
+```
+
+```sql
+create index idx_payments_settlement_covering
+on payments (transaction_date, status, merchant_id, type)
+include (amount);
+```
+
+기대 효과는 `transaction_date`로 대상 날짜를 좁히고, `status` 조건과 `merchant_id` 기준 GROUP BY, `type` 기준 PAYMENT/CANCEL 구분을 함께 반영하는 것이다. `amount`를 include해 sum 계산 시 heap read가 줄어드는지, `Index Only Scan` 또는 heap read 감소가 실제로 발생하는지 검증한다.

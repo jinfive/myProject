@@ -341,10 +341,10 @@ include (amount);
 
 현재 병목은 `payments`의 `Parallel Seq Scan`이다. 2026-05-17 대상 322,581건을 찾기 위해 약 967만 건이 filter에서 제거되므로, 날짜 조건 선택도가 실제 인덱스 선택으로 이어지는지 단계적으로 확인한다. 이번 작업에서는 실제 인덱스 생성이나 성능 측정은 하지 않고, 다음 실험 방향만 정리한다.
 
-다음 인덱스 실험은 바로 covering index로 가지 않고 단순 인덱스부터 검증한다.
+날짜 단독 인덱스 실험은 바로 covering index로 가지 않고 단순 인덱스부터 검증했다.
 
 1. 1차 실험: `payments(transaction_date)` 인덱스를 생성해 날짜 조건만으로 `Parallel Seq Scan`이 줄어드는지 확인한다.
-2. 2차 실험: `payments(transaction_date, status, merchant_id)` 인덱스를 생성해 where 조건과 group by 기준까지 고려했을 때 더 좋아지는지 확인한다. `status`는 현재 선택도가 낮을 수 있지만 정산 쿼리 조건에 포함되므로 실험 가치가 있다.
+2. 2차 실험: 날짜 단독 인덱스 결과를 보고 정산 쿼리에 필요한 조건, 집계 기준, 집계 컬럼을 더 반영한 인덱스를 선택한다.
 
 판단 기준은 Execution Time, Scan 방식, `Parallel Seq Scan` 유지 여부, `Index Scan` 또는 `Bitmap Index Scan` 사용 여부, Rows Removed by Filter, Buffers hit/read, temp read/write, API `GROUP_BY_QUERY`, API `GROUP_BY_BULK_SAVE`, 정산 합계 동일성이다.
 
@@ -365,9 +365,28 @@ on payments (transaction_date);
 | Buffers hit/read | 14,537 / 88,572 | 314 / 103,070 | read 증가 |
 | temp read/write | 848.667 / 1,903.000 | 825.000 / 1,880.667 | 큰 변화 없음 |
 
-실행계획은 `payments` `Parallel Seq Scan`에서 `idx_payments_transaction_date` 기반 `Bitmap Index Scan`과 `Bitmap Heap Scan`으로 바뀌었다. `Rows Removed by Filter`는 약 967만 건에서 0건으로 줄어 날짜 조건에는 인덱스가 선택됐다. 다만 heap block read가 줄지 않고 오히려 증가해, 3회 평균 기준 실행 시간 개선은 확인되지 않았다.
+실행계획은 `payments` `Parallel Seq Scan`에서 `idx_payments_transaction_date` 기반 `Bitmap Index Scan`과 `Bitmap Heap Scan`으로 바뀌었다. `Rows Removed by Filter`는 약 967만 건에서 0건으로 줄어 날짜 조건 필터링에는 성공했다. 그러나 Bitmap Heap Scan으로 테이블 본문 접근이 늘었고, Buffers read가 88,572에서 103,070으로 증가했다. 결과적으로 3회 평균 기준 API 성능은 오히려 악화됐다.
+
+따라서 `transaction_date` 단독 인덱스만으로는 현재 정산 쿼리 개선에 적합하지 않다고 판단한다. 이 결과는 실패가 아니라, 인덱스가 항상 성능 개선으로 이어지지 않으며 쿼리 조건과 필요한 컬럼을 함께 고려해야 한다는 검증 결과로 기록한다.
 
 두 API 전략 모두 매회 `processedCount=322,581`, Settlement 10,000건을 생성했다. GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE의 결제금액 27,066,846,805.00, 취소금액 3,387,078,413.00, 순매출 23,679,768,392.00, 수수료 447,339,420.65, 최종 정산금액 23,232,428,971.35는 동일했다.
+
+실험 후 날짜 단독 인덱스는 제거하고 `ANALYZE payments`를 실행했다. 현재 `payments`에는 `payments_pkey`만 남겨 둔다.
+
+```sql
+drop index if exists idx_payments_transaction_date;
+analyze payments;
+```
+
+다음 인덱스 실험은 정산 쿼리에 필요한 조건과 집계 컬럼을 더 반영한 covering index로 진행한다.
+
+```sql
+create index idx_payments_settlement_covering
+on payments (transaction_date, status, merchant_id, type)
+include (amount);
+```
+
+기대 효과는 `transaction_date`로 대상 날짜를 좁히고, `status` 조건과 `merchant_id` 기준 GROUP BY, `type` 기준 PAYMENT/CANCEL 구분을 함께 반영하는 것이다. `amount`를 include해 sum 계산 시 heap read가 줄어드는지, `Index Only Scan` 또는 heap read 감소가 실제로 발생하는지 검증한다.
 
 API 목록:
 
@@ -469,7 +488,7 @@ where conrelid = 'batch_job_histories'::regclass;
 - 1000만 건 실험은 대용량 정산 배치 개선을 설명하기 위한 최종 검증 단계입니다.
 - Hibernate batch_size와 PostgreSQL reWriteBatchedInserts는 Settlement 저장 건수가 5,000건 이상으로 늘어난 뒤 saveAll만으로 저장 성능 개선이 제한적일 때 검토합니다.
 - GROUP_BY_BULK_INDEX와 인덱스 적용은 1000만 건에서 GROUP_BY_QUERY가 수 초 이상 걸리거나 `EXPLAIN ANALYZE`에서 전체 스캔 비용이 크다고 확인될 때 검토합니다.
-- 날짜 분산 데이터셋의 인덱스 실험은 바로 covering index로 가지 않고 `payments(transaction_date)` 단순 인덱스를 먼저 검증한 뒤, `payments(transaction_date, status, merchant_id)` 복합 인덱스를 비교합니다.
+- 날짜 분산 데이터셋의 인덱스 실험은 `payments(transaction_date)` 단순 인덱스를 먼저 검증했습니다. 날짜 조건에는 인덱스가 선택됐지만 API 성능은 악화됐으므로, 다음은 정산 쿼리에 필요한 조건과 집계 컬럼을 함께 반영한 covering index를 비교합니다.
 - EXPLAIN ANALYZE는 인덱스가 실제 실행 계획에서 사용되는지 검증하는 단계입니다.
 - 대사 기능은 원천 Payment와 Settlement 결과가 일치하는지 검증하는 금융권 정합성 근거입니다.
 - RUNNING 중복 실행 방지는 같은 날짜와 같은 전략의 배치가 동시에 실행되어 DB 부하와 충돌을 만드는 문제를 막는 안정성 개선입니다.
