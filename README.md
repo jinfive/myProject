@@ -455,6 +455,16 @@ native query 적용 후 API SQL은 `count(*)`로 실행됐고, EXPLAIN은 `Paral
 
 두 전략 모두 `processedCount=322,581`, Settlement 10,000건을 생성했고, GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE의 결제금액, 취소금액, 수수료, 최종 정산금액 합계는 동일했다. DB 집계조회 병목은 크게 줄었고, 이후 남은 병목은 Settlement 저장 구간으로 본다.
 
+### saveAll과 JDBC batch insert 한계 확인
+
+native `count(*)` 적용 후 DB 집계조회 시간은 줄었지만, `GROUP_BY_BULK_SAVE`가 `GROUP_BY_QUERY`보다 빠르지 않았다. 두 전략은 같은 native 집계 쿼리를 사용하며 차이는 Settlement 생성과 저장 방식이다. `GROUP_BY_BULK_SAVE`는 stream으로 Settlement 목록을 만든 뒤 `settlementRepository.saveAll(settlements)`를 호출한다.
+
+현재 설정에는 `spring.jpa.properties.hibernate.jdbc.batch_size`, `hibernate.order_inserts`, `hibernate.order_updates`가 없고, datasource URL에도 PostgreSQL JDBC `reWriteBatchedInserts=true`가 없다. `dummy-data.batch-size`와 `benchmark.batch-size`는 더미 데이터와 벤치마크 데이터 생성 시 나눠 저장하기 위한 애플리케이션 설정이며, Hibernate JDBC batch insert 설정이 아니다.
+
+SQL 로그에서는 `insert into settlements (...) values (...)` 형태가 Settlement 10,000건에 대해 개별 반복으로 출력됐고, multi-row insert나 JDBC batch로 묶인 형태는 확인되지 않았다. 또한 `Settlement.id`는 `@GeneratedValue(strategy = GenerationType.IDENTITY)`를 사용한다. IDENTITY 전략은 insert 직후 generated id를 받아야 하므로 Hibernate가 insert를 모아 batch로 보내는 데 제약이 있다.
+
+따라서 현재 단계의 `saveAll`은 코드상 일괄 전달일 뿐, 실제 DB 관점의 bulk insert로 보기는 어렵다. `GROUP_BY_BULK_SAVE`가 느린 이유는 true JDBC batch 효과 없이 10,000건 insert가 개별 실행되고, 여기에 리스트 생성과 영속성 컨텍스트 관리 비용이 더해졌기 때문으로 판단한다.
+
 API 목록:
 
 ```text
@@ -553,7 +563,7 @@ where conrelid = 'batch_job_histories'::regclass;
 - 10만 건 실험은 성능 개선 전 기준선과 DB GROUP BY 집계 효과를 확인한 완료된 기준 실험입니다.
 - 100만 건 실험은 1000만 건으로 가기 전에 데이터 생성, 정합성, 실행 시간, 메모리 부담을 점검하는 중간 단계입니다.
 - 1000만 건 실험은 대용량 정산 배치 개선을 설명하기 위한 최종 검증 단계입니다.
-- Hibernate batch_size와 PostgreSQL reWriteBatchedInserts는 Settlement 저장 건수가 5,000건 이상으로 늘어난 뒤 saveAll만으로 저장 성능 개선이 제한적일 때 검토합니다.
+- 현재 설정에는 Hibernate `jdbc.batch_size`와 PostgreSQL `reWriteBatchedInserts=true`가 없고, `Settlement.id`가 IDENTITY 전략이라 `saveAll`만으로 실제 JDBC batch insert 효과를 기대하기 어렵습니다. 저장 병목 개선은 이 제약을 확인한 뒤 별도 실험으로 분리합니다.
 - GROUP_BY_BULK_INDEX와 인덱스 적용은 1000만 건에서 GROUP_BY_QUERY가 수 초 이상 걸리거나 `EXPLAIN ANALYZE`에서 전체 스캔 비용이 크다고 확인될 때 검토합니다.
 - 날짜 분산 데이터셋의 인덱스 실험은 `payments(transaction_date)` 단순 인덱스를 먼저 검증했습니다. 날짜 조건에는 인덱스가 선택됐지만 API 성능은 악화됐으므로, 다음은 정산 쿼리에 필요한 조건과 집계 컬럼을 함께 반영한 covering index를 비교합니다.
 - EXPLAIN ANALYZE는 인덱스가 실제 실행 계획에서 사용되는지 검증하는 단계입니다.
