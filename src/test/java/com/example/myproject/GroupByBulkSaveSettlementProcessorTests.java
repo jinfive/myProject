@@ -8,12 +8,11 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.example.myproject.domain.batch.SettlementStrategy;
-import com.example.myproject.domain.merchant.Merchant;
 import com.example.myproject.domain.payment.PaymentStatus;
 import com.example.myproject.domain.payment.PaymentType;
 import com.example.myproject.domain.settlement.Settlement;
 import com.example.myproject.repository.PaymentRepository;
-import com.example.myproject.repository.PaymentSettlementAggregation;
+import com.example.myproject.repository.PaymentSettlementAggregationProjection;
 import com.example.myproject.repository.SettlementRepository;
 import com.example.myproject.service.GroupByBulkSaveSettlementProcessor;
 import com.example.myproject.service.SettlementProcessResult;
@@ -35,13 +34,13 @@ class GroupByBulkSaveSettlementProcessorTests {
 
     @Test
     void groupByBulkSaveUsesAggregationQueryAndSaveAllWithoutLoadingPaymentEntities() {
-        Merchant merchant = new Merchant("merchant-a", new BigDecimal("0.0300"));
-        PaymentSettlementAggregation aggregation = new PaymentSettlementAggregation(
-                merchant,
-                merchant.getFeeRate(),
+        PaymentSettlementAggregationProjection aggregation = aggregation(
+                1L,
+                "merchant-a",
                 new BigDecimal("10000.00"),
                 new BigDecimal("1000.00"),
-                2
+                new BigDecimal("0.0300"),
+                2L
         );
 
         when(settlementRepository.existsBySettlementDateAndProcessingStrategy(
@@ -50,9 +49,9 @@ class GroupByBulkSaveSettlementProcessorTests {
         )).thenReturn(false);
         when(paymentRepository.aggregateCompletedPaymentsByMerchant(
                 SETTLEMENT_DATE,
-                PaymentStatus.COMPLETED,
-                PaymentType.PAYMENT,
-                PaymentType.CANCEL
+                PaymentStatus.COMPLETED.name(),
+                PaymentType.PAYMENT.name(),
+                PaymentType.CANCEL.name()
         )).thenReturn(List.of(aggregation));
         when(settlementRepository.saveAll(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -67,9 +66,9 @@ class GroupByBulkSaveSettlementProcessorTests {
 
         verify(paymentRepository).aggregateCompletedPaymentsByMerchant(
                 SETTLEMENT_DATE,
-                PaymentStatus.COMPLETED,
-                PaymentType.PAYMENT,
-                PaymentType.CANCEL
+                PaymentStatus.COMPLETED.name(),
+                PaymentType.PAYMENT.name(),
+                PaymentType.CANCEL.name()
         );
         verify(paymentRepository, never()).findAllByTransactionDate(any());
         verify(settlementRepository).saveAll(any());
@@ -78,5 +77,46 @@ class GroupByBulkSaveSettlementProcessorTests {
                 eq(SETTLEMENT_DATE),
                 eq(SettlementStrategy.GROUP_BY_BULK_SAVE)
         );
+    }
+
+    private PaymentSettlementAggregationProjection aggregation(
+            Long merchantId,
+            String merchantName,
+            BigDecimal paymentAmount,
+            BigDecimal cancelAmount,
+            BigDecimal feeRate,
+            long processedCount
+    ) {
+        return new PaymentSettlementAggregationProjection() {
+            @Override
+            public Long getMerchantId() {
+                return merchantId;
+            }
+
+            @Override
+            public String getMerchantName() {
+                return merchantName;
+            }
+
+            @Override
+            public BigDecimal getFeeRate() {
+                return feeRate;
+            }
+
+            @Override
+            public BigDecimal getPaymentAmount() {
+                return paymentAmount;
+            }
+
+            @Override
+            public BigDecimal getCancelAmount() {
+                return cancelAmount;
+            }
+
+            @Override
+            public long getProcessedCount() {
+                return processedCount;
+            }
+        };
     }
 }

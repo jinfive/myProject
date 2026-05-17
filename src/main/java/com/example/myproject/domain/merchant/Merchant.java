@@ -30,6 +30,12 @@ public class Merchant {
         this.feeRate = feeRate;
     }
 
+    public Merchant(Long id, String name, BigDecimal feeRate) {
+        this.id = id;
+        this.name = name;
+        this.feeRate = feeRate;
+    }
+
     public Long getId() {
         return id;
     }

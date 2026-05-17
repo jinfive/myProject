@@ -14,7 +14,7 @@ import com.example.myproject.domain.settlement.Settlement;
 import com.example.myproject.repository.BatchJobHistoryRepository;
 import com.example.myproject.repository.MerchantRepository;
 import com.example.myproject.repository.PaymentRepository;
-import com.example.myproject.repository.PaymentSettlementAggregation;
+import com.example.myproject.repository.PaymentSettlementAggregationProjection;
 import com.example.myproject.repository.SettlementRepository;
 import com.example.myproject.service.BasicLoopSettlementService;
 import java.math.BigDecimal;
@@ -129,14 +129,14 @@ class SettlementIntegrationTests {
     @Test
     void groupByBulkSaveStoresSameCountAsAggregationsAndRecordsSuccessHistory() {
         createMultiMerchantPaymentFixture();
-        List<PaymentSettlementAggregation> aggregations = paymentRepository.aggregateCompletedPaymentsByMerchant(
+        List<PaymentSettlementAggregationProjection> aggregations = paymentRepository.aggregateCompletedPaymentsByMerchant(
                 SETTLEMENT_DATE,
-                PaymentStatus.COMPLETED,
-                PaymentType.PAYMENT,
-                PaymentType.CANCEL
+                PaymentStatus.COMPLETED.name(),
+                PaymentType.PAYMENT.name(),
+                PaymentType.CANCEL.name()
         );
         long aggregationProcessedCount = aggregations.stream()
-                .mapToLong(PaymentSettlementAggregation::processedCount)
+                .mapToLong(PaymentSettlementAggregationProjection::getProcessedCount)
                 .sum();
 
         settlementService.run(SETTLEMENT_DATE, SettlementStrategy.GROUP_BY_BULK_SAVE);

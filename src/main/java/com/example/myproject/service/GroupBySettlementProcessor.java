@@ -7,6 +7,7 @@ import com.example.myproject.domain.payment.PaymentType;
 import com.example.myproject.domain.settlement.Settlement;
 import com.example.myproject.repository.PaymentRepository;
 import com.example.myproject.repository.PaymentSettlementAggregation;
+import com.example.myproject.repository.PaymentSettlementAggregationProjection;
 import com.example.myproject.repository.SettlementRepository;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -45,12 +46,16 @@ public class GroupBySettlementProcessor {
         long duplicateCheckElapsedNanos = System.nanoTime() - duplicateCheckStartedAt;
 
         long aggregationStartedAt = System.nanoTime();
-        List<PaymentSettlementAggregation> aggregations = paymentRepository.aggregateCompletedPaymentsByMerchant(
+        List<PaymentSettlementAggregationProjection> aggregationProjections =
+                paymentRepository.aggregateCompletedPaymentsByMerchant(
                 settlementDate,
-                PaymentStatus.COMPLETED,
-                PaymentType.PAYMENT,
-                PaymentType.CANCEL
+                PaymentStatus.COMPLETED.name(),
+                PaymentType.PAYMENT.name(),
+                PaymentType.CANCEL.name()
         );
+        List<PaymentSettlementAggregation> aggregations = aggregationProjections.stream()
+                .map(this::toAggregation)
+                .toList();
         long aggregationElapsedNanos = System.nanoTime() - aggregationStartedAt;
 
         List<Settlement> settlements = new ArrayList<>(aggregations.size());
@@ -85,6 +90,17 @@ public class GroupBySettlementProcessor {
     }
 
     protected void afterSettlementSaved(Settlement settlement) {
+    }
+
+    private PaymentSettlementAggregation toAggregation(PaymentSettlementAggregationProjection projection) {
+        Merchant merchant = new Merchant(projection.getMerchantId(), projection.getMerchantName(), projection.getFeeRate());
+        return new PaymentSettlementAggregation(
+                merchant,
+                projection.getFeeRate(),
+                projection.getPaymentAmount(),
+                projection.getCancelAmount(),
+                projection.getProcessedCount()
+        );
     }
 
     private Settlement toSettlement(
