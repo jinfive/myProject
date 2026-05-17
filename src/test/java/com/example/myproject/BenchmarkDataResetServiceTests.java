@@ -94,6 +94,29 @@ class BenchmarkDataResetServiceTests {
         assertThat(batchJobHistoryRepository.count()).isEqualTo(1);
     }
 
+    @Test
+    void regeneratesDateDistributedBenchmarkData() {
+        BenchmarkDataProperties properties = new BenchmarkDataProperties();
+        properties.setProfile("test-large-date-distributed");
+        properties.setResetEnabled(true);
+        properties.setMerchantCount(5);
+        properties.setPaymentCount(31);
+        properties.setBatchSize(7);
+        properties.setTargetDate(LocalDate.of(2026, 5, 15));
+        properties.setDateDistributionStart(LocalDate.of(2026, 5, 1));
+        properties.setDateDistributionEnd(LocalDate.of(2026, 5, 31));
+
+        DummyDataService.BenchmarkGenerationResult result = dummyDataService.regenerateBenchmark(properties);
+
+        assertThat(result.merchantCount()).isEqualTo(5);
+        assertThat(result.paymentCount()).isEqualTo(31);
+        assertThat(result.targetDate()).isEqualTo(LocalDate.of(2026, 5, 15));
+        assertThat(result.targetDatePaymentCount()).isEqualTo(1);
+        assertThat(paymentRepository.countByTransactionDate(LocalDate.of(2026, 5, 1))).isEqualTo(1);
+        assertThat(paymentRepository.countByTransactionDate(LocalDate.of(2026, 5, 15))).isEqualTo(1);
+        assertThat(paymentRepository.countByTransactionDate(LocalDate.of(2026, 5, 31))).isEqualTo(1);
+    }
+
     private Payment createPayment(Merchant merchant, LocalDate transactionDate) {
         return new Payment(
                 merchant,

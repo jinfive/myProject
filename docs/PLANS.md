@@ -547,13 +547,14 @@ README와 PPT에 처리 시간 비교표와 개선 이유를 정리한다.
 1. 10만 건 / Merchant 100개 기준 실험 정리
 2. 100만 건 / Merchant 5,000개 중간 확장 실험
 3. 1000만 건 / Merchant 5,000~10,000개 최종 대용량 실험
-4. 저장 병목 확인 시 Hibernate batch_size 적용 검토
-5. 저장 병목이 계속 남으면 PostgreSQL reWriteBatchedInserts 적용 검토
-6. 1000만 건 조회 병목 확인 시 GROUP_BY_BULK_INDEX 구현
-7. EXPLAIN ANALYZE로 실행 계획 확인
-8. 대사 기능 추가
-9. RUNNING 중복 실행 방지
-10. 날짜 파티셔닝은 고도화 항목으로 문서화
+4. 2026년 5월 날짜 분산 benchmark-large 실험
+5. 저장 병목 확인 시 Hibernate batch_size 적용 검토
+6. 저장 병목이 계속 남으면 PostgreSQL reWriteBatchedInserts 적용 검토
+7. 1000만 건 조회 병목 확인 시 GROUP_BY_BULK_INDEX 구현
+8. EXPLAIN ANALYZE로 실행 계획 확인
+9. 대사 기능 추가
+10. RUNNING 중복 실행 방지
+11. 날짜 파티셔닝은 고도화 항목으로 문서화
 ```
 
 각 단계는 독립된 개선 액션으로 관리하고, 다음 단계로 넘어가기 전에 검증 결과와 README 반영 내용을 남긴다. 현재 10만 건 기준에서는 GROUP_BY_QUERY 적용만으로 충분한 성능 개선을 확인했으므로, 인덱스와 batch 설정은 바로 적용하지 않고 100만/1000만 건 측정 결과를 보고 판단한다.
@@ -565,13 +566,14 @@ README와 PPT에 처리 시간 비교표와 개선 이유를 정리한다.
 | 1 | 10만 건 기준 실험 | Payment 100,000건, Merchant 100개로 기준선과 GROUP BY 효과 확인 | GROUP_BY_QUERY가 가장 큰 개선 효과를 만들었다 |
 | 2 | 100만 건 중간 확장 | Payment 1,000,000건, Merchant 5,000개로 정합성·시간·메모리 확인 | BASIC_LOOP 8,253ms, GROUP_BY_QUERY 899ms, GROUP_BY_BULK_SAVE 798ms를 측정했다 |
 | 3 | 1000만 건 대용량 실험 | Payment 10,000,000건, Merchant 10,000개로 최종 검증 | 쿼리 구조 개선 후 GROUP_BY_QUERY 4,796ms, GROUP_BY_BULK_SAVE 4,149ms를 측정했다 |
-| 4 | Hibernate batch_size | 저장 건수가 5,000건 이상 늘고 saveAll만으로 부족할 때 검토 | 저장 병목을 확인한 뒤 설정 효과를 분리 측정한다 |
-| 5 | PostgreSQL reWriteBatchedInserts | batch 설정 후에도 저장 병목이 남을 때 검토 | JDBC 드라이버 옵션 효과가 실제로 있는지 확인한다 |
-| 6 | GROUP_BY_BULK_INDEX | 1000만 건 조회 병목이 확인될 때 인덱스 적용 | 불필요한 인덱스 비용을 피하고 병목 기반으로 적용했다 |
-| 7 | EXPLAIN ANALYZE | 인덱스가 실제 실행 계획에서 사용되는지 확인 | Seq Scan/Index Scan, 실행 시간, rows 예측 차이를 확인했다 |
-| 8 | 대사 기능 | 원천 Payment와 Settlement 결과 일치 검증 | 성능 개선 후에도 결과 정합성이 유지됨을 증명했다 |
-| 9 | RUNNING 중복 실행 방지 | 같은 날짜와 같은 전략의 동시 실행 차단 | 반복 클릭과 동시 요청으로 인한 DB 부하와 충돌을 막았다 |
-| 10 | 날짜 파티셔닝 문서화 | 장기 데이터 누적에 대비한 확장 방향 정리 | 실제 구현이 아니라 고도화 항목으로 남겼다 |
+| 4 | 1000만 건 날짜 분산 실험 | Payment 10,000,000건을 2026년 5월 31일에 분산 | 단일 날짜 편중을 제거해 transaction_date 인덱스 선택도를 다시 검증한다 |
+| 5 | Hibernate batch_size | 저장 건수가 5,000건 이상 늘고 saveAll만으로 부족할 때 검토 | 저장 병목을 확인한 뒤 설정 효과를 분리 측정한다 |
+| 6 | PostgreSQL reWriteBatchedInserts | batch 설정 후에도 저장 병목이 남을 때 검토 | JDBC 드라이버 옵션 효과가 실제로 있는지 확인한다 |
+| 7 | GROUP_BY_BULK_INDEX | 1000만 건 조회 병목이 확인될 때 인덱스 적용 | 불필요한 인덱스 비용을 피하고 병목 기반으로 적용했다 |
+| 8 | EXPLAIN ANALYZE | 인덱스가 실제 실행 계획에서 사용되는지 확인 | Seq Scan/Index Scan, 실행 시간, rows 예측 차이를 확인했다 |
+| 9 | 대사 기능 | 원천 Payment와 Settlement 결과 일치 검증 | 성능 개선 후에도 결과 정합성이 유지됨을 증명했다 |
+| 10 | RUNNING 중복 실행 방지 | 같은 날짜와 같은 전략의 동시 실행 차단 | 반복 클릭과 동시 요청으로 인한 DB 부하와 충돌을 막았다 |
+| 11 | 날짜 파티셔닝 문서화 | 장기 데이터 누적에 대비한 확장 방향 정리 | 실제 구현이 아니라 고도화 항목으로 남겼다 |
 
 작업별 README 기록 형식:
 

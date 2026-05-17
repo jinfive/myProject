@@ -10,12 +10,16 @@ import com.example.myproject.repository.SettlementRepository;
 import jakarta.persistence.EntityManager;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.sql.Connection;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
+import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -32,19 +36,22 @@ public class DummyDataService {
     private final SettlementRepository settlementRepository;
     private final DummyDataProperties properties;
     private final EntityManager entityManager;
+    private final DataSource dataSource;
 
     public DummyDataService(
             MerchantRepository merchantRepository,
             PaymentRepository paymentRepository,
             SettlementRepository settlementRepository,
             DummyDataProperties properties,
-            EntityManager entityManager
+            EntityManager entityManager,
+            DataSource dataSource
     ) {
         this.merchantRepository = merchantRepository;
         this.paymentRepository = paymentRepository;
         this.settlementRepository = settlementRepository;
         this.properties = properties;
         this.entityManager = entityManager;
+        this.dataSource = dataSource;
     }
 
     @Transactional
@@ -100,9 +107,10 @@ public class DummyDataService {
                 spec.targetDate()
         );
 
-        int deletedSettlementCount = settlementRepository.deleteAllInBulk();
-        int deletedPaymentCount = paymentRepository.deleteAllInBulk();
-        int deletedMerchantCount = merchantRepository.deleteAllInBulk();
+        long deletedSettlementCount = settlementRepository.count();
+        long deletedPaymentCount = paymentRepository.count();
+        long deletedMerchantCount = merchantRepository.count();
+        resetBenchmarkTables();
         entityManager.flush();
         entityManager.clear();
 
@@ -163,6 +171,32 @@ public class DummyDataService {
         }
         if (spec.batchSize() <= 0) {
             throw new IllegalArgumentException("dummy-data.batch-size must be greater than 0");
+        }
+        if ((spec.dateDistributionStart() == null) != (spec.dateDistributionEnd() == null)) {
+            throw new IllegalArgumentException("date distribution start and end must be configured together");
+        }
+        if (spec.usesDateDistribution() && spec.dateDistributionStart().isAfter(spec.dateDistributionEnd())) {
+            throw new IllegalArgumentException("date distribution start must be before or equal to end");
+        }
+    }
+
+    private void resetBenchmarkTables() {
+        if (isPostgreSql()) {
+            entityManager.createNativeQuery("truncate table settlements, payments, merchants restart identity cascade")
+                    .executeUpdate();
+            return;
+        }
+
+        settlementRepository.deleteAllInBulk();
+        paymentRepository.deleteAllInBulk();
+        merchantRepository.deleteAllInBulk();
+    }
+
+    private boolean isPostgreSql() {
+        try (Connection connection = dataSource.getConnection()) {
+            return connection.getMetaData().getURL().startsWith("jdbc:postgresql:");
+        } catch (SQLException exception) {
+            throw new IllegalStateException("Failed to inspect datasource url", exception);
         }
     }
 
@@ -226,6 +260,11 @@ public class DummyDataService {
     }
 
     private LocalDate resolveTransactionDate(int index, GenerationSpec spec) {
+        if (spec.usesDateDistribution()) {
+            long dayCount = ChronoUnit.DAYS.between(spec.dateDistributionStart(), spec.dateDistributionEnd()) + 1;
+            return spec.dateDistributionStart().plusDays(index % dayCount);
+        }
+
         if (index < spec.targetDatePaymentCount()) {
             return spec.targetDate();
         }
@@ -253,8 +292,14 @@ public class DummyDataService {
             int paymentCount,
             int targetDatePaymentCount,
             LocalDate targetDate,
-            int batchSize
+            int batchSize,
+            LocalDate dateDistributionStart,
+            LocalDate dateDistributionEnd
     ) {
+
+        private boolean usesDateDistribution() {
+            return dateDistributionStart != null && dateDistributionEnd != null;
+        }
 
         private static GenerationSpec from(DummyDataProperties properties) {
             return new GenerationSpec(
@@ -262,7 +307,9 @@ public class DummyDataService {
                     properties.getPaymentCount(),
                     properties.getTargetDatePaymentCount(),
                     properties.getTargetDate(),
-                    properties.getBatchSize()
+                    properties.getBatchSize(),
+                    null,
+                    null
             );
         }
 
@@ -272,7 +319,9 @@ public class DummyDataService {
                     properties.getPaymentCount(),
                     properties.getPaymentCount(),
                     properties.resolveTargetDate(),
-                    properties.getBatchSize()
+                    properties.getBatchSize(),
+                    properties.getDateDistributionStart(),
+                    properties.getDateDistributionEnd()
             );
         }
     }

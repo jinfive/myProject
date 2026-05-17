@@ -715,3 +715,37 @@ include (amount);
 ### 11. 자소서/면접 요약
 
 1000만 건 정산 쿼리에서 Parallel Seq Scan과 heap read 비용이 남아 있어 covering index로 Index Only Scan을 유도할 수 있을지 가설을 세웠습니다. 정산 쿼리에 필요한 조건 컬럼과 집계 컬럼을 인덱스에 포함했지만, 실제 실행계획에서는 인덱스가 사용되지 않고 Parallel Seq Scan이 유지됐습니다. 원인을 확인해 보니 모든 데이터가 단일 날짜에 몰려 있고 상태값도 대부분 COMPLETED라 조건 선택도가 낮았습니다. 이 경험을 통해 인덱스는 무조건 성능을 높이는 수단이 아니라 데이터 분포와 실행계획을 함께 보고 판단해야 한다는 점을 확인했습니다. 이후 방향도 인덱스를 억지로 유지하는 것이 아니라 날짜 분산 데이터셋이나 일자·가맹점 단위 사전 집계 테이블 검토로 수정했습니다.
+
+---
+
+## benchmark-large-date-distributed 데이터셋 구현
+
+### 1. 문제 상황
+
+기존 benchmark-large 데이터는 10,000,000건이 `2026-05-15` 단일 날짜에 몰려 있었다. 이 조건에서는 `transaction_date` 조건이 대부분의 데이터를 통과시키므로 covering index의 선택도와 효과를 판단하기 어려웠다.
+
+### 2. 판단
+
+인덱스 효과를 다시 검증하려면 같은 10,000,000건 규모를 유지하되, 결제일자를 2026년 5월 한 달에 분산해 특정 정산일의 조회 대상 row 수를 줄여야 한다. 기존 benchmark 데이터에 추가하지 않고 재생성해야 Merchant와 날짜 분포를 통제할 수 있다.
+
+### 3. 구현 액션
+
+- `benchmark-large-date-distributed` 프로파일 추가
+- Merchant 10,000개 생성
+- Payment 10,000,000건 생성
+- `transaction_date`를 `2026-05-01`부터 `2026-05-31`까지 최대한 균등 분산
+- 10,000개 Merchant에 Payment를 순차 분산
+- `reset-enabled=true`일 때만 `settlements`, `payments`, `merchants` 순서로 초기화
+- `batch_job_histories` 보존
+
+### 4. 검증 결과
+
+- 데이터 재생성 시간: 2,870,068ms
+- `merchants = 10,000`
+- `payments = 10,000,000`
+- `settlements = 0`
+- `batch_job_histories = 70` 보존
+- 날짜 범위: `2026-05-01` ~ `2026-05-31`
+- distinct transaction_date: 31일
+- 날짜별 Payment 수: `2026-05-01` ~ `2026-05-20`은 각 322,581건, `2026-05-21` ~ `2026-05-31`은 각 322,580건
+- `2026-05-15` Payment 수: 322,581건

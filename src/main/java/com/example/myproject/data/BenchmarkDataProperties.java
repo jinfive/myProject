@@ -14,6 +14,8 @@ public class BenchmarkDataProperties {
     private int paymentCount = 100_000;
     private int batchSize = 1_000;
     private LocalDate targetDate;
+    private LocalDate dateDistributionStart;
+    private LocalDate dateDistributionEnd;
 
     public String getProfile() {
         return profile;
@@ -81,5 +83,21 @@ public class BenchmarkDataProperties {
 
     public LocalDate resolveTargetDate() {
         return targetDate == null ? LocalDate.now() : targetDate;
+    }
+
+    public LocalDate getDateDistributionStart() {
+        return dateDistributionStart;
+    }
+
+    public void setDateDistributionStart(LocalDate dateDistributionStart) {
+        this.dateDistributionStart = dateDistributionStart;
+    }
+
+    public LocalDate getDateDistributionEnd() {
+        return dateDistributionEnd;
+    }
+
+    public void setDateDistributionEnd(LocalDate dateDistributionEnd) {
+        this.dateDistributionEnd = dateDistributionEnd;
     }
 }

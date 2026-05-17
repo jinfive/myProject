@@ -1,0 +1,10 @@
+benchmark:
+  profile: large-date-distributed
+  reset-enabled: true
+  merchant-count: 10000
+  payment-count: 10000000
+  batch-size: 1000
+  target-date: 2026-05-15
+  target-date-sync-enabled: false
+  date-distribution-start: 2026-05-01
+  date-distribution-end: 2026-05-31

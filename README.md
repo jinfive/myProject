@@ -53,8 +53,9 @@ npm run dev
 | 1 | 100,000 | 100 | 기준 실험 완료, Payment 전체 조회 병목 확인 | BASIC_LOOP, GROUP_BY_QUERY, GROUP_BY_BULK_SAVE |
 | 2 | 1,000,000 | 5,000 | 중간 확장, 정합성·실행 시간·메모리 부담 점검 | BASIC_LOOP, GROUP_BY_QUERY, GROUP_BY_BULK_SAVE |
 | 3 | 10,000,000 | 5,000~10,000 | 최종 대용량 검증, 조회 병목과 저장 병목 재확인 | GROUP_BY_QUERY, GROUP_BY_BULK_SAVE |
+| 4 | 10,000,000 | 10,000 | 2026년 5월 날짜 분산 조건에서 인덱스 선택도 재검증 | GROUP_BY_QUERY, GROUP_BY_BULK_SAVE |
 
-100만 건 benchmark-medium 데이터셋과 1000만 건 benchmark-large 데이터셋은 구현 완료했습니다. 각 benchmark 프로파일을 사용하면 기존 benchmark 데이터를 추가하지 않고 `settlements`, `payments`, `merchants`를 초기화한 뒤 지정된 Merchant와 Payment 수로 오늘 날짜 기준 데이터를 재생성합니다. `batch_job_histories`는 실행 이력이므로 삭제하지 않습니다.
+100만 건 benchmark-medium 데이터셋과 1000만 건 benchmark-large 데이터셋은 구현 완료했습니다. `benchmark-large-date-distributed` 프로파일은 10,000,000건을 2026-05-01부터 2026-05-31까지 최대한 균등하게 분산해 생성합니다. 각 benchmark 프로파일을 사용하면 기존 benchmark 데이터를 추가하지 않고 `settlements`, `payments`, `merchants`를 초기화한 뒤 지정된 조건으로 재생성합니다. `batch_job_histories`는 실행 이력이므로 삭제하지 않습니다.
 
 1000만 건에서는 `BASIC_LOOP`를 강제 실행하지 않고, DB GROUP BY 기반 전략 중심으로 정합성과 실행 시간을 비교합니다.
 
@@ -122,9 +123,10 @@ benchmark:
 ```bash
 ./gradlew bootRun --args='--spring.profiles.active=benchmark-medium'
 ./gradlew bootRun --args='--spring.profiles.active=benchmark-large'
+./gradlew bootRun --args='--spring.profiles.active=benchmark-large-date-distributed'
 ```
 
-현재 프로파일은 `benchmark-small`(기본값, 100,000 payments / 100 merchants), `benchmark-medium`(1,000,000 payments / 5,000 merchants), `benchmark-large`(10,000,000 payments / 10,000 merchants)을 사용합니다. 기존 `payments`와 `merchants`는 무단 삭제하지 않고, `benchmark.reset-enabled=true`처럼 명확한 설정값을 켠 경우에만 재생성합니다. `batch_job_histories`는 실행 이력이므로 계속 보존합니다.
+현재 프로파일은 `benchmark-small`(기본값, 100,000 payments / 100 merchants), `benchmark-medium`(1,000,000 payments / 5,000 merchants), `benchmark-large`(10,000,000 payments / 10,000 merchants), `benchmark-large-date-distributed`(10,000,000 payments / 10,000 merchants / 2026년 5월 날짜 분산)을 사용합니다. 기존 `payments`와 `merchants`는 무단 삭제하지 않고, `benchmark.reset-enabled=true`처럼 명확한 설정값을 켠 경우에만 재생성합니다. `batch_job_histories`는 실행 이력이므로 계속 보존합니다.
 
 ## 정산 배치 처리 전략
 
