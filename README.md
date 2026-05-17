@@ -465,6 +465,25 @@ SQL 로그에서는 `insert into settlements (...) values (...)` 형태가 Settl
 
 따라서 현재 단계의 `saveAll`은 코드상 일괄 전달일 뿐, 실제 DB 관점의 bulk insert로 보기는 어렵다. `GROUP_BY_BULK_SAVE`가 느린 이유는 true JDBC batch 효과 없이 10,000건 insert가 개별 실행되고, 여기에 리스트 생성과 영속성 컨텍스트 관리 비용이 더해졌기 때문으로 판단한다.
 
+### IDENTITY 유지 + Hibernate batch_size 실험
+
+기본 실행에 영향을 주지 않기 위해 `benchmark-hibernate-batch-size` profile을 추가하고, 해당 profile에서만 Hibernate batch 설정을 켰다. 실험 profile은 데이터 재생성과 스키마 변경을 피하기 위해 `dummy-data.enabled=false`, `benchmark.reset-enabled=false`, `ddl-auto=validate`, `local-schema-migration.enabled=false`로 실행했다.
+
+```yaml
+spring.jpa.properties.hibernate.jdbc.batch_size: 1000
+spring.jpa.properties.hibernate.order_inserts: true
+spring.jpa.properties.hibernate.order_updates: true
+```
+
+실행 시 Hibernate는 `Automatic JDBC statement batching enabled (maximum batch size 1000)`을 출력했다. 그러나 SQL DEBUG 샘플에서는 여전히 `insert into settlements (...) values (...)`가 개별 반복으로 출력됐고, PostgreSQL multi-row insert 형태는 확인되지 않았다. `Settlement.id`가 IDENTITY 전략이므로 insert 직후 generated id를 받아야 하는 제약은 그대로 남는다.
+
+| 전략 | DB집계조회 평균 | 저장 평균 | API 전체 평균 |
+|---|---:|---:|---:|
+| GROUP_BY_QUERY | 297.837ms | 1,105.225ms | 1,490.271ms |
+| GROUP_BY_BULK_SAVE | 276.100ms | 975.471ms | 1,289.364ms |
+
+두 전략 모두 `processedCount=322,581`, Settlement 10,000건을 생성했고, 결제금액 27,066,846,805.00, 취소금액 3,387,078,413.00, 수수료 447,339,420.65, 최종 정산금액 23,232,428,971.35가 동일했다. 이번 측정에서는 API 시간과 저장 시간이 개선됐지만, SQL 형태상 true bulk insert가 확인되지는 않았다. 따라서 Hibernate `batch_size`만으로 충분하다고 보기 어렵고, 다음 단계에서는 `JdbcTemplate batchUpdate`처럼 generated id를 받지 않는 명시적 bulk 저장 전략을 별도로 비교한다.
+
 API 목록:
 
 ```text

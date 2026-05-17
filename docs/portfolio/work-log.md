@@ -1006,3 +1006,34 @@ SQL 로그에서는 `insert into settlements (...) values (...)` 문장이 Settl
 ### 4. 판단
 
 `GROUP_BY_BULK_SAVE`가 더 느린 원인은 true JDBC batch insert 효과 없이 10,000건 insert가 개별 실행되고, 여기에 stream 기반 리스트 생성과 영속성 컨텍스트 관리 비용이 추가됐기 때문으로 판단한다. 다음 개선은 바로 설정을 넣기보다 IDENTITY 전략에서 Hibernate batch insert가 제한되는 조건, ID 전략 변경 가능성, PostgreSQL JDBC batch rewrite 적용 조건을 별도 실험으로 분리해 검증한다.
+
+## IDENTITY 유지 상태에서 Hibernate batch_size 저장 성능 실험
+
+### 1. 목표
+
+`Settlement.id`의 IDENTITY 전략은 유지하고 Hibernate `jdbc.batch_size`만 켜서 Settlement 10,000건 저장 구간이 개선되는지 확인했다. `JdbcTemplate batchUpdate`, ID 전략 변경, PostgreSQL JDBC `reWriteBatchedInserts=true`는 적용하지 않았다.
+
+### 2. 적용 설정
+
+기본 실행에 영향을 주지 않기 위해 `benchmark-hibernate-batch-size` profile을 추가했다. 이 profile에서만 `spring.jpa.properties.hibernate.jdbc.batch_size=1000`, `hibernate.order_inserts=true`, `hibernate.order_updates=true`를 설정했다. 실험 중 데이터 재생성과 스키마 변경을 피하기 위해 `dummy-data.enabled=false`, `benchmark.reset-enabled=false`, `spring.jpa.hibernate.ddl-auto=validate`, `local-schema-migration.enabled=false`도 함께 둔다.
+
+### 3. 측정 결과
+
+2026-05-17 기준으로 매 실행 전 해당 날짜 settlements만 삭제하고 GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE를 각각 3회 측정했다.
+
+| 전략 | DB집계조회 평균 | 저장 평균 | API 전체 평균 |
+|---|---:|---:|---:|
+| GROUP_BY_QUERY | 297.837ms | 1,105.225ms | 1,490.271ms |
+| GROUP_BY_BULK_SAVE | 276.100ms | 975.471ms | 1,289.364ms |
+
+### 4. insert 방식 확인
+
+애플리케이션 시작 로그에는 `Automatic JDBC statement batching enabled (maximum batch size 1000)`이 출력됐다. 하지만 SQL DEBUG 샘플에서는 `insert into settlements (...) values (...)`가 Settlement별로 반복됐고, multi-row insert 형태는 확인되지 않았다.
+
+`Settlement.id`는 여전히 `@GeneratedValue(strategy = GenerationType.IDENTITY)`다. IDENTITY 전략은 insert 직후 DB가 생성한 id를 받아야 하므로 Hibernate가 insert를 모아 보내는 데 제약이 남는다. 따라서 이번 측정에서 저장 시간이 줄었더라도, 이를 true bulk insert 효과로 단정하기는 어렵다.
+
+### 5. 정합성 및 판단
+
+두 전략 모두 `processedCount=322,581`, Settlement 10,000건을 생성했다. 결제금액 27,066,846,805.00, 취소금액 3,387,078,413.00, 수수료 447,339,420.65, 최종 정산금액 23,232,428,971.35는 동일했다.
+
+Hibernate `batch_size`만으로 API 시간은 개선됐지만, IDENTITY 제약과 개별 insert 로그가 남아 있어 충분한 bulk 저장 전략으로 보기는 어렵다. 다음 단계에서는 ID 생성값을 애플리케이션에서 사용하지 않는 정산 저장 특성을 활용해 `JdbcTemplate batchUpdate` 기반 명시적 bulk insert 전략을 별도 구현해 비교한다.

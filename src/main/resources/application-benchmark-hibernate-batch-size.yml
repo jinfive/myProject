@@ -1,0 +1,19 @@
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          batch_size: 1000
+        order_inserts: true
+        order_updates: true
+
+local-schema-migration:
+  enabled: false
+
+dummy-data:
+  enabled: false
+
+benchmark:
+  reset-enabled: false
