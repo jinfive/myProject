@@ -927,3 +927,31 @@ covering index 적용 후 EXPLAIN은 `Index Only Scan`, `Heap Fetches=0`, temp w
 ### 5. 판단
 
 가장 큰 병목은 두 전략 모두 DB 집계 조회였고, 다음 병목은 Settlement 저장이었다. 응답 DTO 생성, 이력 저장/갱신, 객체 생성 시간은 API 전체 시간에서 매우 작았다. 다음 작업은 저장 구간을 `saveAll`만이 아니라 Hibernate batch size와 PostgreSQL `reWriteBatchedInserts` 적용 여부로 분리 측정하는 것이다.
+
+## JPQL count(p)와 실제 SQL count(p.id) 차이
+
+### 1. 문제 상황
+
+covering index 적용 후 수동 EXPLAIN은 `Index Only Scan`, `Heap Fetches=0`으로 매우 빨랐다. 하지만 API 내부 구간 측정에서는 DB 집계 조회가 3~4초대로 나와 수동 EXPLAIN과 API 실행 시간이 크게 달랐다.
+
+### 2. 원인
+
+기존 Repository 집계 쿼리는 JPQL constructor projection인 `select new PaymentSettlementAggregation(...)`를 사용했다. 이 JPQL 안에서 `count(p)`를 사용했는데, Hibernate가 실제 SQL을 만들 때 이를 `count(p.id)`로 변환할 수 있다는 점을 확인했다.
+
+현재 covering index는 `transaction_date`, `status`, `merchant_id`, `type`, `amount`만 포함하고 `id`는 포함하지 않는다. 따라서 API 실제 SQL이 `count(p.id)`를 실행하면 인덱스만 보고 집계를 끝낼 수 없고, 테이블 본문 접근이 필요해 `Bitmap Heap Scan`이 발생할 수 있다. 반면 수동 SQL의 `count(*)`는 `id` 값을 볼 필요가 없어 `Index Only Scan`이 가능했다.
+
+### 3. 학습한 점
+
+- JPQL 코드와 DB에서 실제 실행되는 SQL은 다를 수 있다.
+- 성능 분석에서는 Repository 코드만 보지 말고 Hibernate SQL 로그와 바인딩 파라미터를 확인해야 한다.
+- covering index는 쿼리에 필요한 모든 컬럼을 인덱스에서 해결할 수 있을 때 효과가 크다.
+- `count(*)`와 `count(id)`는 결과가 같아 보여도 실행계획에는 큰 차이를 만들 수 있다.
+- native query를 쓰면 `count(*)`를 명시할 수 있지만, JPQL의 `select new DTO(...)` 문법을 사용할 수 없으므로 interface projection 같은 별도 매핑 방식이 필요하다.
+
+### 4. 면접 설명 포인트
+
+처음에는 covering index를 만들었는데도 API가 느려져 원인을 바로 알지 못했다. 그래서 API 내부 시간을 구간별로 쪼개고, Hibernate가 실제로 실행한 SQL과 바인딩 파라미터를 확인했다. 그 결과 JPQL `count(p)`가 SQL `count(p.id)`로 바뀌어 covering index에 없는 `id` 컬럼 때문에 heap 접근이 발생한다는 점을 확인했다. 이 과정을 통해 인덱스 튜닝은 인덱스 생성 자체보다 실제 SQL과 실행계획을 끝까지 대조하는 일이 중요하다는 점을 학습했다.
+
+### 5. 다음 실험 방향
+
+다음 단계에서는 집계 쿼리를 native query로 분리하고 `count(*)`를 명시한다. 결과는 interface projection으로 받은 뒤, API 실제 SQL이 `count(*)`로 나가는지 로그로 확인하고 EXPLAIN에서 `Index Only Scan`, `Heap Fetches=0`이 유지되는지 다시 검증한다. 이후 GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE API 성능을 같은 조건에서 3회 평균으로 재측정한다.
