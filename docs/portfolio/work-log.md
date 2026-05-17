@@ -860,3 +860,45 @@ include (amount);
 ```
 
 기대 효과는 `transaction_date`로 대상 날짜를 좁히고, `status` 조건과 `merchant_id` 기준 GROUP BY, `type` 기준 PAYMENT/CANCEL 구분을 함께 반영하는 것이다. `amount`를 include해 sum 계산 시 heap read가 줄어드는지, `Index Only Scan` 또는 heap read 감소가 실제로 발생하는지 검증한다.
+
+---
+
+## covering index 성능 실험 - 날짜 분산 데이터셋
+
+### 1. 문제 상황
+
+날짜 단독 인덱스는 `Bitmap Index Scan`으로 선택됐지만 `Bitmap Heap Scan`에서 테이블 본문 접근이 늘어 API 성능 개선으로 이어지지 않았다.
+
+### 2. 판단
+
+정산 쿼리는 날짜와 상태로 필터링하고, 가맹점과 결제 유형으로 집계하며, 금액 합계를 계산한다. 따라서 조건 컬럼뿐 아니라 집계 기준과 집계 컬럼까지 포함한 covering index로 `Index Only Scan` 또는 heap read 감소가 가능한지 확인한다.
+
+### 3. 적용한 인덱스
+
+```sql
+create index idx_payments_settlement_covering
+on payments (transaction_date, status, merchant_id, type)
+include (amount);
+```
+
+인덱스 생성 후 `ANALYZE payments`를 실행했다. `work_mem`은 변경하지 않았다.
+
+### 4. 결과
+
+| 항목 | 인덱스 적용 전 평균 | covering index 적용 후 평균 | 개선 효과 |
+|---|---:|---:|---:|
+| EXPLAIN 실행 시간 | 2,242.501ms | 119.167ms | 2,123.334ms 감소 |
+| API GROUP_BY_QUERY | 3,021.333ms | 4,449.667ms | 1,428.334ms 증가 |
+| API GROUP_BY_BULK_SAVE | 2,478.333ms | 3,940.667ms | 1,462.334ms 증가 |
+| Buffers read | 88,572 | 769.667 | 87,802.333 감소 |
+| temp written | 1,880 | 0 | 1,880 감소 |
+
+실행계획은 `idx_payments_settlement_covering` 기반 `Index Only Scan`을 사용했고, `Heap Fetches=0`이었다. `payments`의 `Parallel Seq Scan`은 사라졌고, temp read/write도 0으로 줄었다. 집계 쿼리 자체는 covering index 효과가 명확했다.
+
+### 5. 정합성
+
+두 API 전략 모두 매회 `processedCount=322,581`, Settlement 10,000건을 생성했다. GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE의 결제금액, 취소금액, 순매출, 수수료, 최종 정산금액 합계는 동일했다.
+
+### 6. 판단
+
+covering index는 EXPLAIN 기준으로 heap read와 temp spill을 크게 줄였지만, API 전체 시간은 3회 평균 기준으로 증가했다. 현재 API 측정값은 DB 집계뿐 아니라 Settlement 10,000건 생성·저장, 응답 객체 생성, 로컬 실행 변동을 함께 포함한다. 따라서 인덱스 유지 또는 제거는 즉시 결정하지 않고, 다음 단계에서 DB 집계 시간과 API 저장 구간 영향을 분리해 판단한다.
