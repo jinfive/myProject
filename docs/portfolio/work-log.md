@@ -801,3 +801,44 @@ on payments (transaction_date, status, merchant_id);
 ```
 
 판단 기준은 Execution Time, Scan 방식, `Parallel Seq Scan` 유지 여부, `Index Scan` 또는 `Bitmap Index Scan` 사용 여부, Rows Removed by Filter, Buffers hit/read, temp read/write, API `GROUP_BY_QUERY`, API `GROUP_BY_BULK_SAVE`, 정산 합계 동일성이다. 이번 작업에서는 실제 인덱스 생성, 성능 측정, `work_mem` 변경은 하지 않는다.
+
+---
+
+## 날짜 단독 인덱스 성능 실험
+
+### 1. 문제 상황
+
+날짜 분산 기준선에서는 2026-05-17 대상 322,581건을 찾기 위해 `payments` 1,000만 건을 `Parallel Seq Scan`으로 읽고, 약 967만 건이 filter에서 제거됐다.
+
+### 2. 판단
+
+바로 covering index나 복합 인덱스로 가지 않고, 먼저 `transaction_date` 단독 인덱스만으로 날짜 조건 선택도가 실행계획과 성능에 어떤 영향을 주는지 분리해서 확인한다.
+
+### 3. 적용한 인덱스
+
+```sql
+create index idx_payments_transaction_date
+on payments (transaction_date);
+```
+
+인덱스 생성 후 `ANALYZE payments`를 실행했다. `work_mem`은 변경하지 않고 4MB 상태를 유지했다.
+
+### 4. 결과
+
+| 항목 | 인덱스 적용 전 평균 | 날짜 단독 인덱스 적용 후 평균 | 변화 |
+|---|---:|---:|---:|
+| EXPLAIN 실행 시간 | 1,917.533ms | 2,157.568ms | 240.035ms 증가 |
+| API GROUP_BY_QUERY | 2,972.000ms | 4,426.667ms | 1,454.667ms 증가 |
+| API GROUP_BY_BULK_SAVE | 2,670.667ms | 3,654.000ms | 983.333ms 증가 |
+| Buffers hit/read | 14,537 / 88,572 | 314 / 103,070 | read 증가 |
+| temp read/write | 848.667 / 1,903.000 | 825.000 / 1,880.667 | 큰 변화 없음 |
+
+실행계획은 `Parallel Seq Scan`에서 `idx_payments_transaction_date` 기반 `Bitmap Index Scan`과 `Bitmap Heap Scan`으로 바뀌었다. `Rows Removed by Filter`는 약 967만 건에서 0건으로 줄었지만, heap block read가 줄지 않아 3회 평균 기준 성능 개선은 확인되지 않았다.
+
+### 5. 정합성
+
+두 API 전략 모두 매회 `processedCount=322,581`, Settlement 10,000건을 생성했다. GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE의 결제금액, 취소금액, 순매출, 수수료, 최종 정산금액 합계는 동일했다.
+
+### 6. 다음 방향
+
+날짜 단독 인덱스는 실행계획상 선택됐지만 성능 개선으로 이어지지 않았다. 다음 단계에서는 예정대로 `payments(transaction_date, status, merchant_id)` 복합 인덱스를 실험해 where 조건과 group by 기준까지 포함했을 때 heap read와 실행 시간이 개선되는지 확인한다.

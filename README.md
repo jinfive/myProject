@@ -348,6 +348,27 @@ include (amount);
 
 판단 기준은 Execution Time, Scan 방식, `Parallel Seq Scan` 유지 여부, `Index Scan` 또는 `Bitmap Index Scan` 사용 여부, Rows Removed by Filter, Buffers hit/read, temp read/write, API `GROUP_BY_QUERY`, API `GROUP_BY_BULK_SAVE`, 정산 합계 동일성이다.
 
+### 날짜 단독 인덱스 실험 결과
+
+다음 날짜 단독 인덱스를 생성하고 `ANALYZE payments`를 실행한 뒤, 같은 2026-05-17 조건에서 3회 평균을 비교했다.
+
+```sql
+create index idx_payments_transaction_date
+on payments (transaction_date);
+```
+
+| 항목 | 인덱스 적용 전 평균 | 날짜 단독 인덱스 적용 후 평균 | 변화 |
+|---|---:|---:|---:|
+| EXPLAIN 실행 시간 | 1,917.533ms | 2,157.568ms | 240.035ms 증가 |
+| API GROUP_BY_QUERY | 2,972.000ms | 4,426.667ms | 1,454.667ms 증가 |
+| API GROUP_BY_BULK_SAVE | 2,670.667ms | 3,654.000ms | 983.333ms 증가 |
+| Buffers hit/read | 14,537 / 88,572 | 314 / 103,070 | read 증가 |
+| temp read/write | 848.667 / 1,903.000 | 825.000 / 1,880.667 | 큰 변화 없음 |
+
+실행계획은 `payments` `Parallel Seq Scan`에서 `idx_payments_transaction_date` 기반 `Bitmap Index Scan`과 `Bitmap Heap Scan`으로 바뀌었다. `Rows Removed by Filter`는 약 967만 건에서 0건으로 줄어 날짜 조건에는 인덱스가 선택됐다. 다만 heap block read가 줄지 않고 오히려 증가해, 3회 평균 기준 실행 시간 개선은 확인되지 않았다.
+
+두 API 전략 모두 매회 `processedCount=322,581`, Settlement 10,000건을 생성했다. GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE의 결제금액 27,066,846,805.00, 취소금액 3,387,078,413.00, 순매출 23,679,768,392.00, 수수료 447,339,420.65, 최종 정산금액 23,232,428,971.35는 동일했다.
+
 API 목록:
 
 ```text
