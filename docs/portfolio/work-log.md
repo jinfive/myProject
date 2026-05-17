@@ -749,3 +749,39 @@ include (amount);
 - distinct transaction_date: 31일
 - 날짜별 Payment 수: `2026-05-01` ~ `2026-05-20`은 각 322,581건, `2026-05-21` ~ `2026-05-31`은 각 322,580건
 - `2026-05-15` Payment 수: 322,581건
+
+## 날짜 분산 benchmark-large 인덱스 없는 기준선 측정
+
+### 1. 문제 상황
+
+단일 날짜 1000만 건 데이터에서는 `transaction_date` 조건 선택도가 낮아 covering index 효과를 판단하기 어려웠다. 날짜 분산 데이터셋을 만든 뒤에는 먼저 실험용 인덱스를 제거하고, 인덱스 없는 현재 쿼리 기준선을 다시 측정해야 했다.
+
+### 2. 판단
+
+인덱스 실험을 다시 진행하기 전에 기준선이 명확해야 한다고 판단했다. 따라서 `idx_payments_settlement_covering`만 제거하고 `ANALYZE payments`를 실행한 뒤, 2026-05-17 기준 322,581건을 대상으로 `work_mem` 기본값 4MB에서 측정했다.
+
+### 3. 검증 방법
+
+- `drop index if exists idx_payments_settlement_covering`
+- `payments` 인덱스 목록 확인: `payments_pkey`만 유지
+- `show work_mem`: 4MB
+- EXPLAIN ANALYZE 3회 측정
+- API GROUP_BY_QUERY 3회 측정
+- API GROUP_BY_BULK_SAVE 3회 측정
+- API 측정 전마다 2026-05-17 settlements만 초기화
+- GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE 합계 금액 동일성 확인
+
+### 4. 결과
+
+| 항목 | 인덱스 없는 기준선 평균 |
+|---|---:|
+| EXPLAIN 실행 시간 | 2,242.501ms |
+| API GROUP_BY_QUERY | 3,021.333ms |
+| API GROUP_BY_BULK_SAVE | 2,478.333ms |
+| temp written | 1,880 |
+
+정산 결과는 두 전략 모두 `processedCount=322,581`, Settlement 10,000건이었다. GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE의 총 결제금액, 총 취소금액, 순매출, 수수료, 최종 정산금액 합계는 동일했다.
+
+### 5. 다음 방향
+
+날짜 분산 후에도 인덱스 없는 기준선에서는 `Parallel Seq Scan`과 `HashAggregate` temp spill이 남아 있다. 다음 단계에서는 같은 데이터셋에서 covering index를 다시 생성해 Index Scan 또는 Index Only Scan 전환 여부와 Buffers read 감소 여부를 비교한다.

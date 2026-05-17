@@ -326,6 +326,19 @@ include (amount);
 
 이 실험은 인덱스가 항상 성능을 높인다는 전제가 맞지 않음을 확인한 사례다. EXPLAIN으로 병목을 확인한 뒤 heap read 감소와 Index Only Scan 가능성을 가설로 세웠지만, 실제 데이터 분포에서는 PostgreSQL이 전체 병렬 스캔을 더 효율적인 계획으로 선택했다. 다음 개선 방향은 날짜 분산 데이터셋으로 조건 선택도를 다시 검증하거나, 정산일자·가맹점 단위 사전 집계 테이블을 검토하는 것이다.
 
+### 날짜 분산 데이터셋 기준선
+
+`benchmark-large-date-distributed` 데이터셋은 10,000,000건을 2026-05-01부터 2026-05-31까지 분산해 생성했다. 실험용 covering index는 제거했고, `payments`에는 기본 PK 인덱스만 남긴 상태에서 2026-05-17 기준 322,581건을 대상으로 3회 평균을 측정했다. `work_mem`은 변경하지 않고 기본값 4MB를 사용했다.
+
+| 항목 | 인덱스 없는 기준선 평균 |
+|---|---:|
+| EXPLAIN 실행 시간 | 2,242.501ms |
+| API GROUP_BY_QUERY | 3,021.333ms |
+| API GROUP_BY_BULK_SAVE | 2,478.333ms |
+| temp written | 1,880 |
+
+두 API 전략 모두 `processedCount=322,581`, Settlement 10,000건을 생성했고, GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE의 결제금액, 취소금액, 순매출, 수수료, 최종 정산금액 합계가 동일했다.
+
 API 목록:
 
 ```text
