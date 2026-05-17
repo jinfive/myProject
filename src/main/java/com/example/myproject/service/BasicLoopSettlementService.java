@@ -8,11 +8,15 @@ import com.example.myproject.repository.SettlementRepository;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class BasicLoopSettlementService {
+
+    private static final Logger log = LoggerFactory.getLogger(BasicLoopSettlementService.class);
 
     private final BatchJobHistoryRepository batchJobHistoryRepository;
     private final SettlementRepository settlementRepository;
@@ -43,18 +47,42 @@ public class BasicLoopSettlementService {
         }
 
         LocalDateTime startedAt = LocalDateTime.now();
+        long historyStartStartedAt = System.nanoTime();
         BatchJobHistory history = batchJobHistoryService.start(settlementDate, strategy, startedAt);
+        long historyStartElapsedNanos = System.nanoTime() - historyStartStartedAt;
+        log.info(
+                "settlement timing date={} strategy={} section=history_start ms={}",
+                settlementDate,
+                strategy,
+                toMillis(historyStartElapsedNanos)
+        );
         try {
             SettlementProcessResult processResult = runProcessor(settlementDate, strategy);
+            long historyCompleteStartedAt = System.nanoTime();
             BatchJobHistory successHistory = batchJobHistoryService.markSuccess(
                     history.getId(),
                     LocalDateTime.now(),
                     processResult.processedCount(),
                     processResult.settlements().size()
             );
+            long historyCompleteElapsedNanos = System.nanoTime() - historyCompleteStartedAt;
+            log.info(
+                    "settlement timing date={} strategy={} section=history_complete status=SUCCESS ms={}",
+                    settlementDate,
+                    strategy,
+                    toMillis(historyCompleteElapsedNanos)
+            );
             return new SettlementRunResult(successHistory, processResult.settlements());
         } catch (RuntimeException exception) {
+            long historyCompleteStartedAt = System.nanoTime();
             batchJobHistoryService.markFailed(history.getId(), LocalDateTime.now(), exception.getMessage());
+            long historyCompleteElapsedNanos = System.nanoTime() - historyCompleteStartedAt;
+            log.info(
+                    "settlement timing date={} strategy={} section=history_complete status=FAILED ms={}",
+                    settlementDate,
+                    strategy,
+                    toMillis(historyCompleteElapsedNanos)
+            );
             throw exception;
         }
     }
@@ -91,5 +119,9 @@ public class BasicLoopSettlementService {
     @Transactional(readOnly = true)
     public List<BatchJobHistory> getBatchHistories() {
         return batchJobHistoryRepository.findTop20ByOrderByStartedAtDesc();
+    }
+
+    private double toMillis(long nanos) {
+        return nanos / 1_000_000.0;
     }
 }

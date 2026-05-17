@@ -902,3 +902,28 @@ include (amount);
 ### 6. 판단
 
 covering index는 EXPLAIN 기준으로 heap read와 temp spill을 크게 줄였지만, API 전체 시간은 3회 평균 기준으로 증가했다. 현재 API 측정값은 DB 집계뿐 아니라 Settlement 10,000건 생성·저장, 응답 객체 생성, 로컬 실행 변동을 함께 포함한다. 따라서 인덱스 유지 또는 제거는 즉시 결정하지 않고, 다음 단계에서 DB 집계 시간과 API 저장 구간 영향을 분리해 판단한다.
+
+## covering index 적용 후 API 구간 분리 측정
+
+### 1. 문제 상황
+
+covering index 적용 후 EXPLAIN은 `Index Only Scan`, `Heap Fetches=0`, temp write 제거로 크게 개선됐지만 API 전체 시간은 증가했다. DB 집계 쿼리 자체와 API 내부 처리 시간을 분리해 병목 구간을 확인해야 했다.
+
+### 2. 측정 방식
+
+컨트롤러, 실행 서비스, GROUP_BY 계열 프로세서에 `System.nanoTime()` 기반 로그를 추가했다. 2026-05-17 기준으로 GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE를 각각 3회 실행했고, 매 측정 전 해당 날짜의 `settlements`만 삭제했다.
+
+### 3. 결과
+
+| 전략 | 중복확인 | 이력시작 | DB집계조회 | 객체생성 | 저장 | 이력완료 | 응답생성 | API전체 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| GROUP_BY_QUERY 평균 | 8.075ms | 22.116ms | 3,446.583ms | 4.072ms | 1,551.424ms | 8.989ms | 3.406ms | 5,092.067ms |
+| GROUP_BY_BULK_SAVE 평균 | 1.816ms | 3.858ms | 4,022.037ms | 2.315ms | 1,392.096ms | 3.641ms | 2.829ms | 5,462.040ms |
+
+### 4. 정합성
+
+두 전략 모두 `processedCount=322,581`, Settlement 10,000건을 생성했다. 결제금액 27,066,846,805.00, 취소금액 3,387,078,413.00, 수수료 447,339,420.65, 최종 정산금액 23,232,428,971.35가 동일했다.
+
+### 5. 판단
+
+가장 큰 병목은 두 전략 모두 DB 집계 조회였고, 다음 병목은 Settlement 저장이었다. 응답 DTO 생성, 이력 저장/갱신, 객체 생성 시간은 API 전체 시간에서 매우 작았다. 다음 작업은 저장 구간을 `saveAll`만이 아니라 Hibernate batch size와 PostgreSQL `reWriteBatchedInserts` 적용 여부로 분리 측정하는 것이다.
