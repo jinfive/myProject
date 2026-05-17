@@ -784,4 +784,20 @@ include (amount);
 
 ### 5. 다음 방향
 
-날짜 분산 후에도 인덱스 없는 기준선에서는 `Parallel Seq Scan`과 `HashAggregate` temp spill이 남아 있다. 다음 단계에서는 같은 데이터셋에서 covering index를 다시 생성해 Index Scan 또는 Index Only Scan 전환 여부와 Buffers read 감소 여부를 비교한다.
+날짜 분산 후에도 인덱스 없는 기준선에서는 `Parallel Seq Scan`과 `HashAggregate` temp spill이 남아 있다. 2026-05-17 대상 322,581건을 찾기 위해 약 967만 건이 filter에서 제거되므로, 다음 단계에서는 바로 covering index로 가지 않고 단순 인덱스부터 날짜 선택도 효과를 검증한다.
+
+1차 실험은 다음 인덱스로 날짜 조건만으로 `Parallel Seq Scan`이 줄어드는지 확인한다.
+
+```sql
+create index idx_payments_transaction_date
+on payments (transaction_date);
+```
+
+2차 실험은 다음 인덱스로 where 조건과 group by 기준까지 고려했을 때 더 좋아지는지 확인한다. `status`는 현재 선택도가 낮을 수 있지만 정산 쿼리 조건에 포함되므로 실험 가치가 있다.
+
+```sql
+create index idx_payments_date_status_merchant
+on payments (transaction_date, status, merchant_id);
+```
+
+판단 기준은 Execution Time, Scan 방식, `Parallel Seq Scan` 유지 여부, `Index Scan` 또는 `Bitmap Index Scan` 사용 여부, Rows Removed by Filter, Buffers hit/read, temp read/write, API `GROUP_BY_QUERY`, API `GROUP_BY_BULK_SAVE`, 정산 합계 동일성이다. 이번 작업에서는 실제 인덱스 생성, 성능 측정, `work_mem` 변경은 하지 않는다.

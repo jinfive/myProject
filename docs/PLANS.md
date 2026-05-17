@@ -591,6 +591,17 @@ README와 PPT에 처리 시간 비교표와 개선 이유를 정리한다.
 
 GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE는 같은 GROUP BY 집계 쿼리를 사용하며, benchmark-large API 기준 차이는 4,796ms와 4,149ms로 약 647ms였다. 저장 방식 차이는 확인됐지만, 실행계획에서 GROUP_BY_QUERY 집계 쿼리만 약 2,979ms가 걸렸고 temp spill과 Parallel Seq Scan이 확인됐으므로 현재 병목 우선순위는 저장보다 조회/집계 개선으로 둔다.
 
+날짜 분산 데이터셋에서는 `benchmark-large-date-distributed` 생성과 인덱스 없는 기준선 측정을 완료했다. Payment 10,000,000건은 2026-05-01부터 2026-05-31까지 분산되어 있고, targetDate 2026-05-17의 대상 Payment는 322,581건이다. 현재 `payments`에는 `payments_pkey`만 남겨 두었으며, 실행계획상 322,581건을 찾기 위해 약 967만 건이 filter에서 제거되어 `Parallel Seq Scan`이 주 병목으로 남아 있다. 이번 후속 실험에서는 `work_mem`을 변경하지 않는다.
+
+다음 인덱스 실험은 바로 covering index로 가지 않고 단순 인덱스부터 단계적으로 검증한다.
+
+| 순서 | 인덱스 후보 | 목적 | 판단 기준 |
+|---:|---|---|---|
+| 1 | `payments(transaction_date)` | 날짜 조건만으로 `Parallel Seq Scan`이 줄어드는지 확인 | Execution Time, Scan 방식, Rows Removed by Filter, Buffers hit/read |
+| 2 | `payments(transaction_date, status, merchant_id)` | where 조건과 group by 기준까지 고려했을 때 더 좋아지는지 확인 | `Index Scan`/`Bitmap Index Scan` 사용 여부, temp read/write, API 전략별 실행 시간, 정산 합계 동일성 |
+
+실험 대상 API는 `GROUP_BY_QUERY`와 `GROUP_BY_BULK_SAVE`로 제한하고, 두 전략의 결제금액, 취소금액, 순매출, 수수료, 최종 정산금액 합계가 동일한지 함께 확인한다.
+
 ```md
 ## 진행 기록
 

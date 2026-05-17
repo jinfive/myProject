@@ -339,6 +339,15 @@ include (amount);
 
 두 API 전략 모두 `processedCount=322,581`, Settlement 10,000건을 생성했고, GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE의 결제금액, 취소금액, 순매출, 수수료, 최종 정산금액 합계가 동일했다.
 
+현재 병목은 `payments`의 `Parallel Seq Scan`이다. 2026-05-17 대상 322,581건을 찾기 위해 약 967만 건이 filter에서 제거되므로, 날짜 조건 선택도가 실제 인덱스 선택으로 이어지는지 단계적으로 확인한다. 이번 작업에서는 실제 인덱스 생성이나 성능 측정은 하지 않고, 다음 실험 방향만 정리한다.
+
+다음 인덱스 실험은 바로 covering index로 가지 않고 단순 인덱스부터 검증한다.
+
+1. 1차 실험: `payments(transaction_date)` 인덱스를 생성해 날짜 조건만으로 `Parallel Seq Scan`이 줄어드는지 확인한다.
+2. 2차 실험: `payments(transaction_date, status, merchant_id)` 인덱스를 생성해 where 조건과 group by 기준까지 고려했을 때 더 좋아지는지 확인한다. `status`는 현재 선택도가 낮을 수 있지만 정산 쿼리 조건에 포함되므로 실험 가치가 있다.
+
+판단 기준은 Execution Time, Scan 방식, `Parallel Seq Scan` 유지 여부, `Index Scan` 또는 `Bitmap Index Scan` 사용 여부, Rows Removed by Filter, Buffers hit/read, temp read/write, API `GROUP_BY_QUERY`, API `GROUP_BY_BULK_SAVE`, 정산 합계 동일성이다.
+
 API 목록:
 
 ```text
@@ -439,7 +448,7 @@ where conrelid = 'batch_job_histories'::regclass;
 - 1000만 건 실험은 대용량 정산 배치 개선을 설명하기 위한 최종 검증 단계입니다.
 - Hibernate batch_size와 PostgreSQL reWriteBatchedInserts는 Settlement 저장 건수가 5,000건 이상으로 늘어난 뒤 saveAll만으로 저장 성능 개선이 제한적일 때 검토합니다.
 - GROUP_BY_BULK_INDEX와 인덱스 적용은 1000만 건에서 GROUP_BY_QUERY가 수 초 이상 걸리거나 `EXPLAIN ANALYZE`에서 전체 스캔 비용이 크다고 확인될 때 검토합니다.
-- 인덱스 후보는 실제 컬럼 기준으로 `payments(transaction_date, status, merchant_id)` 조합을 우선 검토합니다.
+- 날짜 분산 데이터셋의 인덱스 실험은 바로 covering index로 가지 않고 `payments(transaction_date)` 단순 인덱스를 먼저 검증한 뒤, `payments(transaction_date, status, merchant_id)` 복합 인덱스를 비교합니다.
 - EXPLAIN ANALYZE는 인덱스가 실제 실행 계획에서 사용되는지 검증하는 단계입니다.
 - 대사 기능은 원천 Payment와 Settlement 결과가 일치하는지 검증하는 금융권 정합성 근거입니다.
 - RUNNING 중복 실행 방지는 같은 날짜와 같은 전략의 배치가 동시에 실행되어 DB 부하와 충돌을 만드는 문제를 막는 안정성 개선입니다.
