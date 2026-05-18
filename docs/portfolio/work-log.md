@@ -265,6 +265,902 @@ GROUP_BY_QUERY는 Payment 전체를 애플리케이션으로 가져오지 않고
 
 A. 개선 효과를 단계별로 설명하기 위해서입니다. GROUP_BY_QUERY 단계에서는 조회와 집계 병목만 줄이고, Settlement 저장 최적화는 GROUP_BY_BULK_SAVE 단계에서 별도로 비교하는 것이 더 명확하다고 판단했습니다.
 
+---
+
+## GROUP_BY_BULK_SAVE 1차 구현
+
+### 1. 문제 상황
+
+GROUP_BY_QUERY로 Payment 전체 Entity 로딩 병목은 줄였지만, Settlement 저장은 여전히 개별 `save` 반복 구조였다. 집계 결과 수가 늘어나면 저장 호출도 병목이 될 수 있다.
+
+### 2. 금융 관점에서 중요한 이유
+
+저장 성능을 개선하더라도 정산 결과가 일부 누락되거나 가맹점별 금액이 달라지면 금융 데이터 정합성이 깨진다. 따라서 저장 방식 변경은 실행 시간뿐 아니라 저장 건수와 금액 동일성 검증이 함께 필요하다.
+
+### 3. 판단 기준
+
+한 번에 Hibernate batch_size와 PostgreSQL JDBC 옵션까지 적용하면 어떤 변경이 효과를 냈는지 설명하기 어렵다. 그래서 이번 단계에서는 `saveAll`만 적용하고, 실제 batch insert 설정은 다음 단계로 분리했다.
+
+### 4. 기술 선택
+
+- GROUP_BY_QUERY의 DB GROUP BY 집계 재사용
+- GroupByBulkSaveSettlementProcessor 추가
+- `settlementRepository.saveAll(settlements)` 적용
+- BatchJobHistory 실행 이력 유지
+
+### 5. 구현 액션
+
+- GROUP_BY_BULK_SAVE 전략 실행 분기 추가
+- Payment 전체 Entity List 조회 없이 집계 결과로 Settlement 생성
+- 개별 `save` 반복 대신 `saveAll` 저장
+- 프론트에서 GROUP_BY_BULK_SAVE 실행 가능 처리
+- GROUP_BY_BULK_INDEX는 미구현 상태 유지
+
+### 6. 검증 방법
+
+- `./gradlew test`
+- `cd frontend && npm run build`
+- 저장 건수 검증: 집계 결과 건수, 생성 Settlement 수, 저장 Settlement 수 비교
+- 금액 정합성 검증: BASIC_LOOP, GROUP_BY_QUERY, GROUP_BY_BULK_SAVE의 가맹점별 금액 비교
+- 실패 처리 검증: GROUP_BY_BULK_SAVE 저장 후 강제 예외 시 Settlement 롤백과 BatchJobHistory FAILED 보존 확인
+- API 수동 검증: 2026-05-14, Payment 100,000건 기준 세 전략 실행
+
+### 7. 결과
+
+테스트에서 GROUP_BY_BULK_SAVE는 Payment 전체 Entity List를 조회하지 않고 DB GROUP BY 집계 결과를 사용하며, `saveAll`을 호출하는 것을 확인했다. 100,000건 로컬 API 1회 측정에서 BASIC_LOOP는 882ms, GROUP_BY_QUERY는 133ms, GROUP_BY_BULK_SAVE는 110ms로 기록되었다. 세 전략 모두 정산 결과 100건과 총 결제금액, 총 취소금액, 총 수수료, 총 정산금액이 동일했다.
+
+### 8. 포트폴리오 문장
+
+GROUP_BY_QUERY로 조회 병목을 줄인 뒤, 저장 단계에서도 반복 insert가 병목이 될 수 있다고 판단했습니다. GROUP_BY_BULK_SAVE 1차 구현에서는 집계 결과로 생성한 Settlement를 개별 저장하지 않고 saveAll 기반으로 저장하도록 변경했습니다. 저장 방식이 바뀌어도 금융 데이터의 정합성이 깨지면 안 된다고 판단해, 집계 결과 건수와 실제 저장 건수, 가맹점별 정산금액이 기존 전략들과 동일한지 검증했습니다.
+
+### 9. 자소서 문장
+
+대용량 정산 배치에서 조회 병목을 GROUP BY 집계로 줄인 뒤, 저장 단계에서도 반복 저장이 병목이 될 수 있다고 판단했습니다. 이에 정산 결과를 개별 저장하지 않고 일괄 저장하는 방식으로 개선하되, 저장 건수와 가맹점별 정산금액이 기존 방식과 동일한지 검증했습니다. 성능 개선 과정에서도 데이터 정합성과 중복 처리 방지를 우선해, 같은 정산일자와 처리 전략이 중복 실행되지 않도록 유지했습니다.
+
+### 10. 면접 답변
+
+GROUP_BY_BULK_SAVE는 GROUP_BY_QUERY의 DB GROUP BY 집계 결과를 그대로 사용하고, Settlement 저장 방식만 개별 save 반복에서 saveAll로 바꾼 단계입니다. saveAll만으로 실제 DB batch insert 효과가 보장되는 것은 아니기 때문에 이번 단계에서는 저장 호출 구조 개선과 정합성 검증에 집중했습니다. 집계 결과 건수와 저장 건수가 일치하는지, BASIC_LOOP와 GROUP_BY_QUERY와 금액이 같은지 테스트와 API로 확인했습니다.
+
+### 11. 예상 질문
+
+**Q. saveAll을 적용하면 바로 벌크 저장이라고 볼 수 있나요?**
+
+A. 코드상 일괄 저장 구조를 만들었다고 볼 수 있지만, JPA/Hibernate에서 실제 DB batch insert 효과를 보려면 `hibernate.jdbc.batch_size` 같은 설정이 추가로 필요할 수 있습니다. 그래서 이번 단계에서는 saveAll만 적용하고, batch_size와 PostgreSQL `reWriteBatchedInserts=true`는 다음 단계로 분리했습니다.
+
+**Q. saveAll 적용 후 어떤 정합성 검증을 했나요?**
+
+A. 집계 결과 건수, 생성 Settlement 수, 실제 저장 Settlement 수가 같은지 확인했습니다. 또한 BASIC_LOOP, GROUP_BY_QUERY, GROUP_BY_BULK_SAVE의 가맹점별 결제금액, 취소금액, 순매출, 수수료, 최종 정산금액이 같은지 검증했습니다.
+
 **Q. 성능 수치가 왜 흔들리나요?**
 
 A. 로컬 단일 DB에서 측정했기 때문에 DB/OS 캐시, JVM warm-up, 실행 순서 영향을 받습니다. 그래서 단일값을 성과로 과장하지 않고 반복 측정 범위와 조건을 함께 기록했습니다.
+
+---
+
+## 정산 배치 성능 실험 규모 확장 기획
+
+### 1. 문제 상황
+
+10만 건 / Merchant 100개 기준 실험에서 BASIC_LOOP 882ms, GROUP_BY_QUERY 133ms, GROUP_BY_BULK_SAVE 110ms를 확인했다. 이 결과로 Payment 전체 조회 방식의 비효율성과 DB GROUP BY 집계 개선 효과는 확인했다.
+
+하지만 Merchant 수가 100개라 Settlement 저장 결과도 100건 수준이었다. 따라서 saveAll 기반 저장 최적화 효과, Hibernate batch 설정 필요성, 인덱스 필요성을 판단하기에는 실험 규모가 작았다.
+
+### 2. 금융 관점에서 중요한 이유
+
+정산 배치는 데이터가 커질수록 조회 병목, 저장 병목, 메모리 부담, 실패 복구 리스크가 함께 커진다. 작은 데이터에서 빠르게 동작했다는 이유만으로 대용량 거래 정산에 적합하다고 설명하면 신뢰도가 낮다.
+
+### 3. 판단 기준
+
+최적화 설정을 바로 추가하기보다 데이터 규모와 Merchant 수를 늘려 병목 위치를 먼저 확인하기로 했다. 인덱스, Hibernate batch_size, PostgreSQL `reWriteBatchedInserts`, Spring Batch는 측정 결과에 따라 필요성을 판단한다.
+
+### 4. 기획 액션
+
+| 단계 | Payment 수 | Merchant 수 | 목적 | 측정 전략 |
+|---:|---:|---:|---|---|
+| 1 | 100,000 | 100 | 기준 실험 완료 | BASIC_LOOP, GROUP_BY_QUERY, GROUP_BY_BULK_SAVE |
+| 2 | 1,000,000 | 5,000 | 중간 확장 및 안정성 검증 | BASIC_LOOP, GROUP_BY_QUERY, GROUP_BY_BULK_SAVE |
+| 3 | 10,000,000 | 5,000~10,000 | 최종 대용량 검증 | GROUP_BY_QUERY, GROUP_BY_BULK_SAVE |
+
+100만 건은 1000만 건으로 가기 전 데이터 생성, 정합성, 실행 시간, 메모리 부담을 확인하는 중간 검증 단계로 둔다. 1000만 건에서는 전체 Payment를 애플리케이션으로 로딩하는 BASIC_LOOP를 필수로 보지 않고, DB GROUP BY 기반 전략 중심으로 비교한다.
+
+### 5. 검증 기준
+
+- 전략별 Settlement 수 동일
+- 전략별 총 결제금액, 총 취소금액, 최종 정산금액 동일
+- BatchJobHistory elapsedMs 기록
+- 중복 실행 방지 유지
+- 실패 시 Settlement 롤백과 BatchJobHistory FAILED 기록 유지
+
+### 6. 결과
+
+이번 작업에서는 데이터를 생성하거나 인덱스, batch 설정, Spring Batch를 적용하지 않았다. 기존 문서의 로드맵을 100만/1000만 건 실험 이후 병목 기반으로 최적화를 판단하는 방향으로 수정했다.
+
+### 7. 포트폴리오 문장
+
+10만 건 기준에서는 GROUP BY 집계만으로 충분한 성능 개선을 확인했습니다. 다만 당시 Merchant 수가 100개라 Settlement 저장 결과가 100건 수준이었고, saveAll 기반 저장 최적화의 효과를 충분히 보기 어렵다고 판단했습니다. 그래서 다음 실험에서는 Payment를 100만 건, Merchant를 5,000개로 늘려 조회 병목과 저장 병목을 함께 확인할 수 있도록 조건을 재설계했습니다.
+
+---
+
+## benchmark-medium 데이터셋 구현 및 100만 건 측정
+
+### 1. 문제 상황
+
+기존 10만 건 데이터에 90만 건을 단순 추가하면 Merchant 분포와 Settlement 저장 건수가 섞여 성능 비교 조건이 불명확해진다. 100만 건 실험은 1000만 건으로 가기 전 데이터 생성, 실행 시간, 정합성, 메모리 부담을 점검하는 중간 단계가 필요했다.
+
+### 2. 금융 관점에서 중요한 이유
+
+정산 성능 개선은 단순히 빠른 실행 시간만 확인하면 안 된다. 데이터 규모가 커져도 전략별 정산 결과 건수와 금액이 동일해야 하고, 과거 실행 이력은 추적 가능해야 한다.
+
+### 3. 판단 기준
+
+medium 데이터셋은 기존 데이터에 추가하지 않고 재생성하도록 했다. 재생성 대상은 `settlements`, `payments`, `merchants`로 제한하고, `batch_job_histories`는 실행 이력이므로 보존했다. 운영 기능처럼 오용되지 않도록 기본값은 비활성화하고 `benchmark-medium` 프로파일과 `benchmark.reset-enabled=true` 조건에서만 실행되도록 했다.
+
+### 4. 구현 액션
+
+- `benchmark-medium` 프로파일 추가
+- benchmark reset 설정 추가
+- Merchant 5,000개, Payment 1,000,000건 생성
+- 5,000개 Merchant에 Payment를 고르게 분산
+- 오늘 날짜 기준으로 정산 가능한 Payment 생성
+- 재생성 시 `batch_job_histories` 보존
+
+### 5. 검증 방법
+
+- `./gradlew test`
+- `./gradlew bootRun --args='--spring.profiles.active=benchmark-medium'`
+- API 실행: BASIC_LOOP, GROUP_BY_QUERY, GROUP_BY_BULK_SAVE
+- DB 건수 확인
+- 전략별 Settlement 합계 비교
+- 같은 날짜 + 같은 전략 중복 실행 409 확인
+
+### 6. 결과
+
+| 항목 | 결과 |
+|---|---:|
+| Merchant 수 | 5,000 |
+| Payment 수 | 1,000,000 |
+| 정산일자 Payment 수 | 1,000,000 |
+| 데이터 재생성 시간 | 96,314ms |
+| 전략별 Settlement 수 | 5,000 |
+
+| 데이터 건수 | Merchant 수 | 전략 | 실행 시간 | 결과 동일성 |
+|---:|---:|---|---:|---|
+| 1,000,000 | 5,000 | BASIC_LOOP | 8,253ms | 기준 |
+| 1,000,000 | 5,000 | GROUP_BY_QUERY | 899ms | BASIC_LOOP와 동일 |
+| 1,000,000 | 5,000 | GROUP_BY_BULK_SAVE | 798ms | BASIC_LOOP와 동일 |
+
+### 7. 포트폴리오 문장
+
+10만 건 실험에서 조회 병목을 확인한 뒤, 100만 건 / Merchant 5,000개 조건으로 데이터셋을 재생성해 중간 확장 실험을 진행했습니다. 기존 데이터에 단순 추가하지 않고 benchmark-medium 조건으로 재생성해 Merchant 분포를 통제했고, 세 전략의 Settlement 수와 총 정산금액이 동일한지 검증했습니다.
+
+---
+
+## benchmark-large 데이터셋 구현 및 1000만 건 측정
+
+### 1. 문제 상황
+
+100만 건 실험으로 중간 확장 조건은 확인했지만, 최종 대용량 정산 배치 설명을 위해서는 1000만 건 조건에서 DB GROUP BY 기반 전략이 정상 동작하는지 확인할 필요가 있었다.
+
+### 2. 판단 기준
+
+1000만 건에서는 전체 Payment를 애플리케이션으로 로딩하는 BASIC_LOOP를 강제 실행하지 않고, GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE 중심으로 측정했다. 기존 benchmark 데이터에 추가하지 않고 benchmark-large 조건으로 재생성해 Merchant 분포를 통제했다.
+
+### 3. 구현 액션
+
+- `benchmark-large` 프로파일 추가
+- Merchant 10,000개, Payment 10,000,000건 생성
+- 10,000개 Merchant에 Payment를 고르게 분산
+- 오늘 날짜 기준으로 정산 가능한 Payment 생성
+- 재생성 시 `settlements`, `payments`, `merchants` 초기화
+- `batch_job_histories` 보존
+
+### 4. 검증 방법
+
+- `./gradlew test`
+- `./gradlew bootRun --args='--spring.profiles.active=benchmark-large'`
+- API 실행: GROUP_BY_QUERY, GROUP_BY_BULK_SAVE
+- DB 건수 확인
+- 전략별 Settlement 합계 비교
+- 같은 날짜 + 같은 전략 중복 실행 409 확인
+
+### 5. 결과
+
+| 항목 | 결과 |
+|---|---:|
+| Merchant 수 | 10,000 |
+| Payment 수 | 10,000,000 |
+| 정산일자 Payment 수 | 10,000,000 |
+| 데이터 재생성 시간 | 978,764ms |
+| 전략별 Settlement 수 | 10,000 |
+
+| 데이터 건수 | Merchant 수 | 전략 | 실행 시간 | 결과 동일성 |
+|---:|---:|---|---:|---|
+| 10,000,000 | 10,000 | GROUP_BY_QUERY | 4,796ms | 기준 |
+| 10,000,000 | 10,000 | GROUP_BY_BULK_SAVE | 4,149ms | GROUP_BY_QUERY와 동일 |
+
+GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE는 같은 payments 선집계 쿼리를 사용한다. API 기준 두 전략의 차이는 약 647ms로, saveAll 기반 저장 구조가 개별 저장보다 유리한 지점은 확인됐다. 다만 실행계획 기준 GROUP_BY_QUERY 집계 쿼리만 약 2,979ms가 걸렸고, `payments` 1000만 건 Parallel Seq Scan과 HashAggregate temp spill이 확인됐기 때문에 현재 병목은 저장보다 조회/집계 쪽이 더 크다고 판단했다.
+
+### 6. 포트폴리오 문장
+
+1000만 건 / Merchant 10,000개 조건에서는 전체 Payment를 애플리케이션으로 로딩하는 BASIC_LOOP를 강제 실행하지 않고, DB GROUP BY 기반 전략 중심으로 측정했습니다. GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE 모두 10,000건의 정산 결과를 생성했고 총 결제금액, 총 취소금액, 총 수수료, 총 정산금액이 동일함을 확인했습니다.
+
+---
+
+## GROUP_BY_QUERY 실행계획 기반 쿼리 구조 개선
+
+### 1. 문제 상황
+
+1000만 건 데이터에서 GROUP_BY_QUERY 실행계획을 확인했을 때, 기존 쿼리는 payments와 merchants를 먼저 조인한 뒤 집계했다. 이 구조에서는 조인 이후의 중간 데이터가 커지고, GROUP BY 과정에서 temp spill이 크게 발생했다.
+
+### 2. 기존 쿼리
+
+```sql
+select
+    m.id as merchant_id,
+    m.name,
+    m.fee_rate,
+    coalesce(sum(case when p.type = 'PAYMENT' then p.amount else 0 end), 0) as total_payment_amount,
+    coalesce(sum(case when p.type = 'CANCEL' then p.amount else 0 end), 0) as total_cancel_amount,
+    count(p.id) as processed_count
+from payments p
+join merchants m on p.merchant_id = m.id
+where p.transaction_date = date '2026-05-15'
+  and p.status = 'COMPLETED'
+group by m.id, m.name, m.fee_rate
+order by m.id;
+```
+
+### 3. 판단
+
+정산에 필요한 핵심 집계는 payments 테이블의 merchant_id 기준 결제/취소 금액 합계다. 따라서 merchants와 먼저 조인하기보다, payments를 먼저 merchant_id 기준으로 집계한 뒤 집계 결과만 merchants와 조인하는 편이 중간 데이터 크기를 줄일 수 있다고 판단했다.
+
+### 4. 개선 쿼리
+
+```sql
+select
+    agg.merchant_id,
+    m.name,
+    m.fee_rate,
+    agg.payment_amount,
+    agg.cancel_amount,
+    agg.processed_count
+from (
+    select
+        p.merchant_id,
+        coalesce(sum(case when p.type = 'PAYMENT' then p.amount else 0 end), 0) as payment_amount,
+        coalesce(sum(case when p.type = 'CANCEL' then p.amount else 0 end), 0) as cancel_amount,
+        count(*) as processed_count
+    from payments p
+    where p.transaction_date = date '2026-05-15'
+      and p.status = 'COMPLETED'
+    group by p.merchant_id
+) agg
+join merchants m on m.id = agg.merchant_id
+order by agg.merchant_id;
+```
+
+### 5. 결과
+
+| 항목 | 개선 전 | 개선 후 |
+|---|---:|---:|
+| EXPLAIN 실행 시간 | 3,855ms | 3,274ms |
+| API GROUP_BY_QUERY | 5,026ms | 4,796ms |
+| API GROUP_BY_BULK_SAVE | 4,596ms | 4,149ms |
+| temp written | 92,954 | 47,200 |
+
+### 6. 검증
+
+- 두 전략의 정산 합계 동일 확인
+- 중복 실행 시 409 Conflict 유지
+- `./gradlew test` 통과
+
+### 7. 포트폴리오 설명
+
+1000만 건 정산 쿼리의 실행계획을 확인한 결과, 기존에는 payments와 merchants를 먼저 조인한 뒤 집계해 중간 데이터가 커지고 temp spill이 많이 발생했습니다. 이를 줄이기 위해 payments를 먼저 merchant_id 기준으로 집계한 뒤, 집계 결과만 merchants와 조인하도록 쿼리 구조를 변경했습니다. 그 결과 temp written이 92,954에서 47,200으로 줄었고, GROUP_BY_QUERY API 실행 시간도 5,026ms에서 4,796ms로 개선되었습니다.
+
+---
+
+## 1000만 건 GROUP BY 병목 개선 방향
+
+### 1. 문제 상황
+
+개선된 GROUP_BY_QUERY는 payments를 먼저 `merchant_id` 기준으로 집계한 뒤 merchants와 조인한다. 개선 후에도 benchmark-large 데이터가 `2026-05-15` 단일 날짜에 1000만 건 몰려 있어 `payments`를 대부분 `Parallel Seq Scan`으로 읽고, `HashAggregate` 과정에서 temp disk spill이 남아 있다.
+
+### 2. 판단
+
+현재 데이터는 `status`가 모두 `COMPLETED`라 partial index는 선택도를 크게 줄이지 못할 가능성이 높다. 따라서 바로 인덱스를 추가하기보다, temp spill과 전체 스캔 비용을 분리해서 확인한 뒤 다음 개선을 선택한다.
+
+### 3. 다음 개선 순서
+
+| 순서 | 개선 후보 | 목적 | 확인 항목 |
+|---:|---|---|---|
+| 1 | 세션 단위 `work_mem` 실험 | HashAggregate temp spill 감소 확인 | temp read/write, HashAggregate batches, Execution Time |
+| 2 | 일반 covering index 실험 | heap read 감소와 Index Only Scan 가능성 확인 | Scan 방식, Buffers read/hit, Execution Time |
+| 3 | 날짜 분산 데이터셋 또는 사전 집계 테이블 | 1000만 건 전체 스캔 비용이 계속 클 때 구조 대안 검토 | 날짜 선택도, 집계 대상 row 수, 실행 시간 |
+
+covering index 후보는 다음과 같이 검토한다.
+
+```sql
+create index idx_payments_settlement_covering
+on payments (transaction_date, status, merchant_id, type)
+include (amount);
+```
+
+### 4. 이번 단계에서 하지 않은 것
+
+- `work_mem` 설정 적용
+- 인덱스 생성
+- 날짜 분산 데이터 생성
+- 사전 집계 테이블 구현
+- Spring Batch 도입
+
+---
+
+## work_mem 세션 단위 GROUP BY temp spill 실험
+
+### 1. 문제 상황
+
+1000만 건 GROUP_BY_QUERY 실행계획에서 `payments` Parallel Seq Scan은 유지됐고, `merchant_id` 기준 HashAggregate 과정에서 temp disk spill이 발생했다. 기본 `work_mem`은 4MB였다.
+
+### 2. 판단
+
+전역 설정을 바꾸기 전에 현재 DB 세션에서만 `SET work_mem`을 적용해 temp spill 감소 여부를 확인했다. 비교 항목은 Execution Time, HashAggregate batches, temp read/write, Buffers hit/read로 제한했다.
+
+### 3. 결과
+
+| work_mem | Execution Time | HashAggregate Batches | temp read | temp written | Buffers hit/read |
+|---:|---:|---:|---:|---:|---:|
+| 4MB | 4,295.640ms | 5 | 26,516 | 46,759 | 13,363 / 100,170 |
+| 64MB | 2,874.350ms | 1 | 0 | 0 | 13,459 / 100,074 |
+| 128MB | 2,645.038ms | 1 | 0 | 0 | 13,555 / 99,978 |
+| 256MB | 2,645.408ms | 1 | 0 | 0 | 13,651 / 99,882 |
+
+### 4. 판단 결과
+
+64MB부터 HashAggregate temp spill이 제거됐다. 128MB와 256MB는 실행 시간 차이가 거의 없어, 무조건 큰 값을 적용하기보다 동시 실행 수와 DB 메모리 여유를 함께 고려해야 한다. 다음 개선은 covering index 실험으로 heap read와 1000만 건 전체 스캔 비용을 줄일 수 있는지 확인한다.
+
+### 5. 이번 단계에서 하지 않은 것
+
+- 전역 `work_mem` 변경
+- 인덱스 생성
+- 날짜 분산 데이터 생성
+- 사전 집계 테이블 구현
+
+---
+
+## work_mem 128MB 적용 전후 3회 평균 재측정
+
+### 1. 문제 상황
+
+psql 또는 DBeaver 세션에서 `SET work_mem`을 실행해도 백엔드 API가 사용하는 DB 커넥션에는 적용되지 않는다. 따라서 API 성능 비교는 백엔드 DB 커넥션에 work_mem이 적용되는 방식으로 다시 측정해야 했다.
+
+### 2. 적용 방식
+
+전역 설정이나 `postgresql.conf`는 수정하지 않았다. 기본값 측정은 일반 JDBC URL로 서버를 실행했고, 128MB 측정은 PostgreSQL JDBC URL의 세션 옵션 `options=-c work_mem=128MB`로 서버를 재실행했다. 각 항목은 3회 반복 측정 후 평균값으로 기록했다.
+
+### 3. 결과
+
+| 항목 | work_mem 적용 전 | work_mem 적용 후 | 개선 효과 |
+|---|---:|---:|---:|
+| EXPLAIN 실행 시간 | 3,159.873ms | 2,458.106ms | 701.767ms |
+| API GROUP_BY_QUERY | 4,203.667ms | 3,399.333ms | 804.334ms |
+| API GROUP_BY_BULK_SAVE | 3,879.333ms | 3,283.333ms | 596.000ms |
+| temp written | 46,805 | 0 | 46,805 감소 |
+
+### 4. 정합성 확인
+
+모든 API 측정에서 `processedCount`는 10,000,000건, Settlement 수는 10,000건이었다. GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE의 총 결제금액, 총 취소금액, 총 수수료, 총 정산금액은 동일했다.
+
+### 5. 판단
+
+3회 평균 기준으로 128MB 적용 시 temp spill이 제거됐고 EXPLAIN과 API 실행 시간이 모두 줄었다. 다만 전역 work_mem 변경은 보류하고, 다음 작업은 covering index로 heap read와 전체 스캔 비용을 확인하는 방향으로 둔다.
+
+---
+
+## covering index 성능 실험
+
+### 1. 문제 상황
+
+`work_mem=128MB` 적용 후 HashAggregate temp spill은 제거됐지만, GROUP_BY_QUERY는 여전히 `payments` 1000만 건을 `Parallel Seq Scan`으로 읽었다. 남은 병목이 heap read와 전체 스캔 비용인지 확인하기 위해 covering index를 실험했다.
+
+### 2. 적용한 인덱스
+
+```sql
+create index idx_payments_settlement_covering
+on payments (transaction_date, status, merchant_id, type)
+include (amount);
+```
+
+### 3. 결과
+
+| 항목 | 인덱스 적용 전 평균 | 인덱스 적용 후 평균 | 개선 효과 |
+|---|---:|---:|---:|
+| EXPLAIN 실행 시간 | 2,958.553ms | 2,647.294ms | 311.259ms |
+| API GROUP_BY_QUERY | 3,642.333ms | 3,534.333ms | 108.000ms |
+| API GROUP_BY_BULK_SAVE | 3,369.333ms | 3,302.333ms | 67.000ms |
+| Buffers read | 98,568 | 99,117 | -549 |
+| temp written | 0 | 0 | 0 |
+
+### 4. 실행계획 비교
+
+인덱스 생성 후에도 `payments`는 `Parallel Seq Scan`을 사용했다. `Index Scan` 또는 `Index Only Scan`은 발생하지 않았고, 따라서 `Heap Fetches` 비교 대상도 없었다. HashAggregate는 `Batches: 1`로 유지됐고 temp read/write는 없었다.
+
+### 5. 판단
+
+현재 benchmark-large 데이터는 `2026-05-15` 단일 날짜에 1000만 건이 몰려 있고 `status`가 모두 `COMPLETED`라 조건 선택도가 낮다. 이 조건에서는 covering index가 선택되지 않아 heap read 감소 효과를 확인하지 못했다. API 평균은 소폭 줄었지만 Buffers read는 줄지 않았으므로, 성능 차이는 캐시와 실행 변동 영향일 가능성이 있다. 다음 판단은 실험용 인덱스 유지 또는 drop 여부를 정한 뒤, 날짜 분산 데이터셋이나 사전 집계 테이블 중 하나를 선택하는 것이다.
+
+### 6. 정합성 확인
+
+모든 API 측정에서 `processedCount`는 10,000,000건, Settlement 수는 10,000건이었다. GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE의 총 결제금액, 총 취소금액, 총 수수료, 총 정산금액은 동일했다.
+
+### 7. 기대와 달랐던 점
+
+정산 쿼리에 필요한 컬럼을 인덱스 키와 include 컬럼에 포함하면, PostgreSQL이 Index Only Scan을 선택하고 테이블 본문 접근을 줄일 수 있을 것이라고 가정했다. 하지만 실제 실행계획에서는 인덱스가 선택되지 않았고, `payments` 전체를 병렬로 읽는 계획이 유지됐다. Buffers read도 줄지 않아 heap read 감소 효과를 확인하지 못했다.
+
+### 8. 원인 분석
+
+인덱스가 선택되지 않은 핵심 원인은 데이터 분포와 조건 선택도였다. benchmark-large 데이터는 1000만 건이 모두 `2026-05-15`에 몰려 있고 `status`도 모두 `COMPLETED`였다. 이 조건에서는 `transaction_date`, `status` 조건이 대부분의 row를 통과시키므로, PostgreSQL 입장에서는 큰 인덱스를 따라 읽는 것보다 테이블을 병렬로 스캔하는 편이 더 효율적이라고 판단한 것으로 해석했다.
+
+### 9. 배운 점
+
+인덱스는 무조건 성능을 높이는 수단이 아니라 데이터 분포, 조건 선택도, 실행계획과 함께 판단해야 한다. 이번 실험에서는 EXPLAIN으로 병목을 보고 가설을 세웠지만, 실제 실행계획과 Buffers 지표를 통해 가설이 맞지 않음을 확인했다. 성능 개선은 설정이나 인덱스를 추가하는 작업이 아니라, 측정 결과에 따라 방향을 수정하는 과정이라는 점을 정리했다.
+
+### 10. 다음 개선 방향
+
+- 실험용 covering index를 유지할지 drop할지 판단한다.
+- 날짜 분산 데이터셋을 만들어 `transaction_date` 조건 선택도가 높아질 때 인덱스가 선택되는지 확인한다.
+- 단일 날짜 대량 정산이 계속 핵심 시나리오라면, 일자·가맹점 단위 사전 집계 테이블을 검토한다.
+- 인덱스보다 사전 집계가 더 적절한 경우, 원천 Payment와 사전 집계 결과의 정합성 검증 방법을 함께 설계한다.
+
+### 11. 자소서/면접 요약
+
+1000만 건 정산 쿼리에서 Parallel Seq Scan과 heap read 비용이 남아 있어 covering index로 Index Only Scan을 유도할 수 있을지 가설을 세웠습니다. 정산 쿼리에 필요한 조건 컬럼과 집계 컬럼을 인덱스에 포함했지만, 실제 실행계획에서는 인덱스가 사용되지 않고 Parallel Seq Scan이 유지됐습니다. 원인을 확인해 보니 모든 데이터가 단일 날짜에 몰려 있고 상태값도 대부분 COMPLETED라 조건 선택도가 낮았습니다. 이 경험을 통해 인덱스는 무조건 성능을 높이는 수단이 아니라 데이터 분포와 실행계획을 함께 보고 판단해야 한다는 점을 확인했습니다. 이후 방향도 인덱스를 억지로 유지하는 것이 아니라 날짜 분산 데이터셋이나 일자·가맹점 단위 사전 집계 테이블 검토로 수정했습니다.
+
+---
+
+## benchmark-large-date-distributed 데이터셋 구현
+
+### 1. 문제 상황
+
+기존 benchmark-large 데이터는 10,000,000건이 `2026-05-15` 단일 날짜에 몰려 있었다. 이 조건에서는 `transaction_date` 조건이 대부분의 데이터를 통과시키므로 covering index의 선택도와 효과를 판단하기 어려웠다.
+
+### 2. 판단
+
+인덱스 효과를 다시 검증하려면 같은 10,000,000건 규모를 유지하되, 결제일자를 2026년 5월 한 달에 분산해 특정 정산일의 조회 대상 row 수를 줄여야 한다. 기존 benchmark 데이터에 추가하지 않고 재생성해야 Merchant와 날짜 분포를 통제할 수 있다.
+
+### 3. 구현 액션
+
+- `benchmark-large-date-distributed` 프로파일 추가
+- Merchant 10,000개 생성
+- Payment 10,000,000건 생성
+- `transaction_date`를 `2026-05-01`부터 `2026-05-31`까지 최대한 균등 분산
+- 10,000개 Merchant에 Payment를 순차 분산
+- `reset-enabled=true`일 때만 `settlements`, `payments`, `merchants` 순서로 초기화
+- `batch_job_histories` 보존
+
+### 4. 검증 결과
+
+- 데이터 재생성 시간: 2,870,068ms
+- `merchants = 10,000`
+- `payments = 10,000,000`
+- `settlements = 0`
+- `batch_job_histories = 70` 보존
+- 날짜 범위: `2026-05-01` ~ `2026-05-31`
+- distinct transaction_date: 31일
+- 날짜별 Payment 수: `2026-05-01` ~ `2026-05-20`은 각 322,581건, `2026-05-21` ~ `2026-05-31`은 각 322,580건
+- `2026-05-15` Payment 수: 322,581건
+
+## 날짜 분산 benchmark-large 인덱스 없는 기준선 측정
+
+### 1. 문제 상황
+
+단일 날짜 1000만 건 데이터에서는 `transaction_date` 조건 선택도가 낮아 covering index 효과를 판단하기 어려웠다. 날짜 분산 데이터셋을 만든 뒤에는 먼저 실험용 인덱스를 제거하고, 인덱스 없는 현재 쿼리 기준선을 다시 측정해야 했다.
+
+### 2. 판단
+
+인덱스 실험을 다시 진행하기 전에 기준선이 명확해야 한다고 판단했다. 따라서 `idx_payments_settlement_covering`만 제거하고 `ANALYZE payments`를 실행한 뒤, 2026-05-17 기준 322,581건을 대상으로 `work_mem` 기본값 4MB에서 측정했다.
+
+### 3. 검증 방법
+
+- `drop index if exists idx_payments_settlement_covering`
+- `payments` 인덱스 목록 확인: `payments_pkey`만 유지
+- `show work_mem`: 4MB
+- EXPLAIN ANALYZE 3회 측정
+- API GROUP_BY_QUERY 3회 측정
+- API GROUP_BY_BULK_SAVE 3회 측정
+- API 측정 전마다 2026-05-17 settlements만 초기화
+- GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE 합계 금액 동일성 확인
+
+### 4. 결과
+
+| 항목 | 인덱스 없는 기준선 평균 |
+|---|---:|
+| EXPLAIN 실행 시간 | 2,242.501ms |
+| API GROUP_BY_QUERY | 3,021.333ms |
+| API GROUP_BY_BULK_SAVE | 2,478.333ms |
+| temp written | 1,880 |
+
+정산 결과는 두 전략 모두 `processedCount=322,581`, Settlement 10,000건이었다. GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE의 총 결제금액, 총 취소금액, 순매출, 수수료, 최종 정산금액 합계는 동일했다.
+
+### 5. 다음 방향
+
+날짜 분산 후에도 인덱스 없는 기준선에서는 `Parallel Seq Scan`과 `HashAggregate` temp spill이 남아 있다. 2026-05-17 대상 322,581건을 찾기 위해 약 967만 건이 filter에서 제거되므로, 다음 단계에서는 바로 covering index로 가지 않고 단순 인덱스부터 날짜 선택도 효과를 검증한다.
+
+1차 실험은 다음 인덱스로 날짜 조건만으로 `Parallel Seq Scan`이 줄어드는지 확인한다.
+
+```sql
+create index idx_payments_transaction_date
+on payments (transaction_date);
+```
+
+2차 실험은 1차 날짜 단독 인덱스 결과를 본 뒤, where 조건과 group by 기준, 집계 컬럼까지 고려한 covering index로 진행한다.
+
+```sql
+create index idx_payments_settlement_covering
+on payments (transaction_date, status, merchant_id, type)
+include (amount);
+```
+
+판단 기준은 Execution Time, Scan 방식, `Parallel Seq Scan` 유지 여부, `Index Scan` 또는 `Bitmap Index Scan` 사용 여부, Rows Removed by Filter, Buffers hit/read, temp read/write, API `GROUP_BY_QUERY`, API `GROUP_BY_BULK_SAVE`, 정산 합계 동일성이다. 이번 작업에서는 실제 인덱스 생성, 성능 측정, `work_mem` 변경은 하지 않는다.
+
+---
+
+## 날짜 단독 인덱스 성능 실험
+
+### 1. 문제 상황
+
+날짜 분산 기준선에서는 2026-05-17 대상 322,581건을 찾기 위해 `payments` 1,000만 건을 `Parallel Seq Scan`으로 읽고, 약 967만 건이 filter에서 제거됐다.
+
+### 2. 판단
+
+바로 covering index나 복합 인덱스로 가지 않고, 먼저 `transaction_date` 단독 인덱스만으로 날짜 조건 선택도가 실행계획과 성능에 어떤 영향을 주는지 분리해서 확인한다.
+
+### 3. 적용한 인덱스
+
+```sql
+create index idx_payments_transaction_date
+on payments (transaction_date);
+```
+
+인덱스 생성 후 `ANALYZE payments`를 실행했다. `work_mem`은 변경하지 않고 4MB 상태를 유지했다.
+
+### 4. 결과
+
+| 항목 | 인덱스 적용 전 평균 | 날짜 단독 인덱스 적용 후 평균 | 변화 |
+|---|---:|---:|---:|
+| EXPLAIN 실행 시간 | 1,917.533ms | 2,157.568ms | 240.035ms 증가 |
+| API GROUP_BY_QUERY | 2,972.000ms | 4,426.667ms | 1,454.667ms 증가 |
+| API GROUP_BY_BULK_SAVE | 2,670.667ms | 3,654.000ms | 983.333ms 증가 |
+| Buffers hit/read | 14,537 / 88,572 | 314 / 103,070 | read 증가 |
+| temp read/write | 848.667 / 1,903.000 | 825.000 / 1,880.667 | 큰 변화 없음 |
+
+실행계획은 `Parallel Seq Scan`에서 `idx_payments_transaction_date` 기반 `Bitmap Index Scan`과 `Bitmap Heap Scan`으로 바뀌었다. `Rows Removed by Filter`는 약 967만 건에서 0건으로 줄어 날짜 조건 필터링에는 성공했다. 그러나 Bitmap Heap Scan으로 테이블 본문 접근이 늘었고, Buffers read가 88,572에서 103,070으로 증가했다. 결과적으로 3회 평균 기준 API 성능은 오히려 악화됐다.
+
+따라서 `transaction_date` 단독 인덱스만으로는 현재 정산 쿼리 개선에 적합하지 않다고 판단한다. 이 결과는 실패가 아니라, 인덱스가 항상 성능 개선으로 이어지지 않으며 쿼리 조건과 필요한 컬럼을 함께 고려해야 한다는 검증 결과다.
+
+### 5. 정합성
+
+두 API 전략 모두 매회 `processedCount=322,581`, Settlement 10,000건을 생성했다. GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE의 결제금액, 취소금액, 순매출, 수수료, 최종 정산금액 합계는 동일했다.
+
+### 6. 다음 방향
+
+날짜 단독 인덱스는 실행계획상 선택됐지만 성능 개선으로 이어지지 않았다. 다음 단계에서는 정산 쿼리에 필요한 조건과 집계 컬럼을 더 반영한 covering index를 실험해 heap read와 실행 시간이 개선되는지 확인한다.
+
+실험 후 날짜 단독 인덱스는 제거하고 `ANALYZE payments`를 실행했다. 현재 `payments`에는 `payments_pkey`만 남겨 둔다.
+
+```sql
+drop index if exists idx_payments_transaction_date;
+analyze payments;
+```
+
+```sql
+create index idx_payments_settlement_covering
+on payments (transaction_date, status, merchant_id, type)
+include (amount);
+```
+
+기대 효과는 `transaction_date`로 대상 날짜를 좁히고, `status` 조건과 `merchant_id` 기준 GROUP BY, `type` 기준 PAYMENT/CANCEL 구분을 함께 반영하는 것이다. `amount`를 include해 sum 계산 시 heap read가 줄어드는지, `Index Only Scan` 또는 heap read 감소가 실제로 발생하는지 검증한다.
+
+---
+
+## covering index 성능 실험 - 날짜 분산 데이터셋
+
+### 1. 문제 상황
+
+날짜 단독 인덱스는 `Bitmap Index Scan`으로 선택됐지만 `Bitmap Heap Scan`에서 테이블 본문 접근이 늘어 API 성능 개선으로 이어지지 않았다.
+
+### 2. 판단
+
+정산 쿼리는 날짜와 상태로 필터링하고, 가맹점과 결제 유형으로 집계하며, 금액 합계를 계산한다. 따라서 조건 컬럼뿐 아니라 집계 기준과 집계 컬럼까지 포함한 covering index로 `Index Only Scan` 또는 heap read 감소가 가능한지 확인한다.
+
+### 3. 적용한 인덱스
+
+```sql
+create index idx_payments_settlement_covering
+on payments (transaction_date, status, merchant_id, type)
+include (amount);
+```
+
+인덱스 생성 후 `ANALYZE payments`를 실행했다. `work_mem`은 변경하지 않았다.
+
+### 4. 결과
+
+| 항목 | 인덱스 적용 전 평균 | covering index 적용 후 평균 | 개선 효과 |
+|---|---:|---:|---:|
+| EXPLAIN 실행 시간 | 2,242.501ms | 119.167ms | 2,123.334ms 감소 |
+| API GROUP_BY_QUERY | 3,021.333ms | 4,449.667ms | 1,428.334ms 증가 |
+| API GROUP_BY_BULK_SAVE | 2,478.333ms | 3,940.667ms | 1,462.334ms 증가 |
+| Buffers read | 88,572 | 769.667 | 87,802.333 감소 |
+| temp written | 1,880 | 0 | 1,880 감소 |
+
+실행계획은 `idx_payments_settlement_covering` 기반 `Index Only Scan`을 사용했고, `Heap Fetches=0`이었다. `payments`의 `Parallel Seq Scan`은 사라졌고, temp read/write도 0으로 줄었다. 집계 쿼리 자체는 covering index 효과가 명확했다.
+
+### 5. 정합성
+
+두 API 전략 모두 매회 `processedCount=322,581`, Settlement 10,000건을 생성했다. GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE의 결제금액, 취소금액, 순매출, 수수료, 최종 정산금액 합계는 동일했다.
+
+### 6. 판단
+
+covering index는 EXPLAIN 기준으로 heap read와 temp spill을 크게 줄였지만, API 전체 시간은 3회 평균 기준으로 증가했다. 현재 API 측정값은 DB 집계뿐 아니라 Settlement 10,000건 생성·저장, 응답 객체 생성, 로컬 실행 변동을 함께 포함한다. 따라서 인덱스 유지 또는 제거는 즉시 결정하지 않고, 다음 단계에서 DB 집계 시간과 API 저장 구간 영향을 분리해 판단한다.
+
+## covering index 적용 후 API 구간 분리 측정
+
+### 1. 문제 상황
+
+covering index 적용 후 EXPLAIN은 `Index Only Scan`, `Heap Fetches=0`, temp write 제거로 크게 개선됐지만 API 전체 시간은 증가했다. DB 집계 쿼리 자체와 API 내부 처리 시간을 분리해 병목 구간을 확인해야 했다.
+
+### 2. 측정 방식
+
+컨트롤러, 실행 서비스, GROUP_BY 계열 프로세서에 `System.nanoTime()` 기반 로그를 추가했다. 2026-05-17 기준으로 GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE를 각각 3회 실행했고, 매 측정 전 해당 날짜의 `settlements`만 삭제했다.
+
+### 3. 결과
+
+| 전략 | 중복확인 | 이력시작 | DB집계조회 | 객체생성 | 저장 | 이력완료 | 응답생성 | API전체 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| GROUP_BY_QUERY 평균 | 8.075ms | 22.116ms | 3,446.583ms | 4.072ms | 1,551.424ms | 8.989ms | 3.406ms | 5,092.067ms |
+| GROUP_BY_BULK_SAVE 평균 | 1.816ms | 3.858ms | 4,022.037ms | 2.315ms | 1,392.096ms | 3.641ms | 2.829ms | 5,462.040ms |
+
+### 4. 정합성
+
+두 전략 모두 `processedCount=322,581`, Settlement 10,000건을 생성했다. 결제금액 27,066,846,805.00, 취소금액 3,387,078,413.00, 수수료 447,339,420.65, 최종 정산금액 23,232,428,971.35가 동일했다.
+
+### 5. 판단
+
+가장 큰 병목은 두 전략 모두 DB 집계 조회였고, 다음 병목은 Settlement 저장이었다. 응답 DTO 생성, 이력 저장/갱신, 객체 생성 시간은 API 전체 시간에서 매우 작았다. 다음 작업은 저장 구간을 `saveAll`만이 아니라 Hibernate batch size와 PostgreSQL `reWriteBatchedInserts` 적용 여부로 분리 측정하는 것이다.
+
+## JPQL count(p)와 실제 SQL count(p.id) 차이
+
+### 1. 문제 상황
+
+covering index 적용 후 수동 EXPLAIN은 `Index Only Scan`, `Heap Fetches=0`으로 매우 빨랐다. 하지만 API 내부 구간 측정에서는 DB 집계 조회가 3~4초대로 나와 수동 EXPLAIN과 API 실행 시간이 크게 달랐다.
+
+### 2. 원인
+
+기존 Repository 집계 쿼리는 JPQL constructor projection인 `select new PaymentSettlementAggregation(...)`를 사용했다. 이 JPQL 안에서 `count(p)`를 사용했는데, Hibernate가 실제 SQL을 만들 때 이를 `count(p.id)`로 변환할 수 있다는 점을 확인했다.
+
+현재 covering index는 `transaction_date`, `status`, `merchant_id`, `type`, `amount`만 포함하고 `id`는 포함하지 않는다. 따라서 API 실제 SQL이 `count(p.id)`를 실행하면 인덱스만 보고 집계를 끝낼 수 없고, 테이블 본문 접근이 필요해 `Bitmap Heap Scan`이 발생할 수 있다. 반면 수동 SQL의 `count(*)`는 `id` 값을 볼 필요가 없어 `Index Only Scan`이 가능했다.
+
+### 3. 학습한 점
+
+- JPQL 코드와 DB에서 실제 실행되는 SQL은 다를 수 있다.
+- 성능 분석에서는 Repository 코드만 보지 말고 Hibernate SQL 로그와 바인딩 파라미터를 확인해야 한다.
+- covering index는 쿼리에 필요한 모든 컬럼을 인덱스에서 해결할 수 있을 때 효과가 크다.
+- `count(*)`와 `count(id)`는 결과가 같아 보여도 실행계획에는 큰 차이를 만들 수 있다.
+- native query를 쓰면 `count(*)`를 명시할 수 있지만, JPQL의 `select new DTO(...)` 문법을 사용할 수 없으므로 interface projection 같은 별도 매핑 방식이 필요하다.
+
+### 4. 면접 설명 포인트
+
+처음에는 covering index를 만들었는데도 API가 느려져 원인을 바로 알지 못했다. 그래서 API 내부 시간을 구간별로 쪼개고, Hibernate가 실제로 실행한 SQL과 바인딩 파라미터를 확인했다. 그 결과 JPQL `count(p)`가 SQL `count(p.id)`로 바뀌어 covering index에 없는 `id` 컬럼 때문에 heap 접근이 발생한다는 점을 확인했다. 이 과정을 통해 인덱스 튜닝은 인덱스 생성 자체보다 실제 SQL과 실행계획을 끝까지 대조하는 일이 중요하다는 점을 학습했다.
+
+### 5. 다음 실험 방향
+
+다음 단계에서는 집계 쿼리를 native query로 분리하고 `count(*)`를 명시한다. 결과는 interface projection으로 받은 뒤, API 실제 SQL이 `count(*)`로 나가는지 로그로 확인하고 EXPLAIN에서 `Index Only Scan`, `Heap Fetches=0`이 유지되는지 다시 검증한다. 이후 GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE API 성능을 같은 조건에서 3회 평균으로 재측정한다.
+
+## 기본 조회 대비 covering index + native count(*) 최종 비교
+
+### 1. 비교 조건
+
+`benchmark-large-date-distributed` 데이터셋에서 2026-05-17 대상 Payment 322,581건을 기준으로 비교했다. 기본 조회 기준값은 인덱스 적용 전 기존 문서 기록을 사용했고, 최종 개선 후 값은 `idx_payments_settlement_covering`과 native `count(*)` 집계 쿼리 적용 후 측정값을 사용했다.
+
+### 2. 결과
+
+| 항목 | 기본 조회 | covering index + native count(*) | 개선 효과 |
+|---|---:|---:|---:|
+| EXPLAIN | 2,242.501ms | 74.988ms | 2,167.513ms 감소 |
+| API GROUP_BY_QUERY | 3,021.333ms | 1,627.667ms | 1,393.666ms 감소 |
+| API GROUP_BY_BULK_SAVE | 2,478.333ms | 2,058.000ms | 420.333ms 감소 |
+| DB집계조회 GROUP_BY_QUERY | 미측정 | 280.836ms | 구간 측정 추가 후 확인 |
+| DB집계조회 GROUP_BY_BULK_SAVE | 미측정 | 308.998ms | 구간 측정 추가 후 확인 |
+| temp written | 1,880 | 0 | 1,880 감소 |
+| Scan 방식 | Parallel Seq Scan | Index Only Scan | 전체 스캔 제거 |
+| Heap Fetches | 해당 없음 | 0 | heap 접근 제거 |
+
+### 3. 판단
+
+기본 조회에서는 targetDate 322,581건을 찾기 위해 `payments` 전체 스캔 비용이 컸다. covering index 적용 후 수동 SQL은 빨라졌지만, API에서는 JPQL `count(p)`가 `count(p.id)`로 변환되어 heap 접근이 발생했다. native query에서 `count(*)`를 명시하고 interface projection으로 받도록 바꾸자 API 경로에서도 `Index Only Scan`이 사용됐다.
+
+DB 집계조회 병목은 수백 ms대로 줄었다. 이제 API 전체 시간에서 상대적으로 크게 남은 구간은 Settlement 10,000건 저장이며, 다음 최적화는 저장 구간을 별도 실험으로 분리해 판단한다.
+
+### 4. 정합성
+
+최종 측정에서도 두 전략 모두 `processedCount=322,581`, Settlement 10,000건을 생성했다. GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE의 결제금액, 취소금액, 수수료, 최종 정산금액 합계는 동일했다.
+
+## saveAll과 JDBC batch insert 한계 확인
+
+### 1. 문제 상황
+
+native `count(*)` 적용 후 DB 집계조회 병목은 크게 줄었지만, API 전체 시간은 `GROUP_BY_QUERY` 1,627.667ms, `GROUP_BY_BULK_SAVE` 2,058.000ms로 `GROUP_BY_BULK_SAVE`가 더 느렸다. 두 전략은 같은 native 집계 쿼리를 사용하므로 남은 차이는 Settlement 객체 생성과 저장 방식에서 확인해야 했다.
+
+### 2. 설정 확인
+
+`application.yml`과 benchmark profile yml에는 `spring.jpa.properties.hibernate.jdbc.batch_size`, `hibernate.order_inserts`, `hibernate.order_updates` 설정이 없다. datasource URL에도 PostgreSQL JDBC `reWriteBatchedInserts=true`가 없다.
+
+`dummy-data.batch-size`와 `benchmark.batch-size`는 더미 데이터 생성과 벤치마크 데이터 생성에서 한 번에 처리할 데이터 수를 나누기 위한 애플리케이션 설정이다. 이 값은 Hibernate JDBC batch insert를 켜는 설정이 아니므로, `saveAll`이 DB insert를 자동으로 batch 처리한다는 근거가 될 수 없다.
+
+### 3. ID 생성 전략과 insert 방식
+
+`Settlement.id`는 `@GeneratedValue(strategy = GenerationType.IDENTITY)`를 사용한다. IDENTITY 전략은 insert 직후 DB가 생성한 id를 받아야 하므로 Hibernate가 여러 insert를 모아 JDBC batch로 보내는 데 제약이 있다.
+
+SQL 로그에서는 `insert into settlements (...) values (...)` 문장이 Settlement 10,000건에 대해 개별 반복되는 형태로 확인됐다. multi-row insert나 JDBC batch로 묶인 형태는 보이지 않았다. 따라서 현재 `saveAll`은 내부적으로 여러 엔티티를 순회해 저장하는 구조에 가깝고, 실제 DB 관점의 bulk insert로 동작한다고 보기 어렵다.
+
+### 4. 판단
+
+`GROUP_BY_BULK_SAVE`가 더 느린 원인은 true JDBC batch insert 효과 없이 10,000건 insert가 개별 실행되고, 여기에 stream 기반 리스트 생성과 영속성 컨텍스트 관리 비용이 추가됐기 때문으로 판단한다. 다음 개선은 바로 설정을 넣기보다 IDENTITY 전략에서 Hibernate batch insert가 제한되는 조건, ID 전략 변경 가능성, PostgreSQL JDBC batch rewrite 적용 조건을 별도 실험으로 분리해 검증한다.
+
+## IDENTITY 유지 상태에서 Hibernate batch_size 저장 성능 실험
+
+### 1. 목표
+
+`Settlement.id`의 IDENTITY 전략은 유지하고 Hibernate `jdbc.batch_size`만 켜서 Settlement 10,000건 저장 구간이 개선되는지 확인했다. `JdbcTemplate batchUpdate`, ID 전략 변경, PostgreSQL JDBC `reWriteBatchedInserts=true`는 적용하지 않았다.
+
+### 2. 적용 설정
+
+기본 실행에 영향을 주지 않기 위해 `benchmark-hibernate-batch-size` profile을 추가했다. 이 profile에서만 `spring.jpa.properties.hibernate.jdbc.batch_size=1000`, `hibernate.order_inserts=true`, `hibernate.order_updates=true`를 설정했다. 실험 중 데이터 재생성과 스키마 변경을 피하기 위해 `dummy-data.enabled=false`, `benchmark.reset-enabled=false`, `spring.jpa.hibernate.ddl-auto=validate`, `local-schema-migration.enabled=false`도 함께 둔다.
+
+### 3. 측정 결과
+
+2026-05-17 기준으로 매 실행 전 해당 날짜 settlements만 삭제하고 GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE를 각각 3회 측정했다.
+
+| 전략 | DB집계조회 평균 | 저장 평균 | API 전체 평균 |
+|---|---:|---:|---:|
+| GROUP_BY_QUERY | 297.837ms | 1,105.225ms | 1,490.271ms |
+| GROUP_BY_BULK_SAVE | 276.100ms | 975.471ms | 1,289.364ms |
+
+### 4. insert 방식 확인
+
+애플리케이션 시작 로그에는 `Automatic JDBC statement batching enabled (maximum batch size 1000)`이 출력됐다. 하지만 SQL DEBUG 샘플에서는 `insert into settlements (...) values (...)`가 Settlement별로 반복됐고, multi-row insert 형태는 확인되지 않았다.
+
+`Settlement.id`는 여전히 `@GeneratedValue(strategy = GenerationType.IDENTITY)`다. IDENTITY 전략은 insert 직후 DB가 생성한 id를 받아야 하므로 Hibernate가 insert를 모아 보내는 데 제약이 남는다. 따라서 이번 측정에서 저장 시간이 줄었더라도, 이를 true bulk insert 효과로 단정하기는 어렵다.
+
+### 5. 정합성 및 판단
+
+두 전략 모두 `processedCount=322,581`, Settlement 10,000건을 생성했다. 결제금액 27,066,846,805.00, 취소금액 3,387,078,413.00, 수수료 447,339,420.65, 최종 정산금액 23,232,428,971.35는 동일했다.
+
+Hibernate `batch_size`만으로 API 시간은 개선됐지만, IDENTITY 제약과 개별 insert 로그가 남아 있어 충분한 bulk 저장 전략으로 보기는 어렵다. 다음 단계에서는 ID 생성값을 애플리케이션에서 사용하지 않는 정산 저장 특성을 활용해 `JdbcTemplate batchUpdate` 기반 명시적 bulk insert 전략을 별도 구현해 비교한다.
+
+## Settlement ID 전략 SEQUENCE 변경 후 저장 성능 재측정
+
+### 1. 목표
+
+IDENTITY 전략은 insert 직후 DB가 생성한 id를 받아야 하므로 Hibernate batch insert에 불리하다. 따라서 `Settlement.id`를 SEQUENCE 전략으로 변경하고, 기존 Hibernate `batch_size=1000` 설정과 함께 저장 성능을 다시 측정했다.
+
+### 2. 변경 내용
+
+`Settlement.id`에 `@SequenceGenerator(name = "settlement_seq_generator", sequenceName = "settlement_seq", allocationSize = 1000)`를 추가하고, `@GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "settlement_seq_generator")`로 변경했다.
+
+PostgreSQL sequence는 Hibernate `ddl-auto=update`가 `settlement_seq`로 생성한다. 기존 로컬 DB에는 `settlements_id_seq`만 있었으므로, 로컬 스키마 보정 러너에서 `settlement_seq`를 만들고 현재 `settlements.id` 최대값보다 뒤로 `setval`하는 보정을 추가했다. 기존 row와 sequence 발급 id가 충돌하지 않도록 하기 위한 처리다.
+
+### 3. 측정 결과
+
+2026-05-17 기준으로 매 실행 전 해당 날짜 settlements만 삭제하고, GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE를 각각 3회 측정했다.
+
+| 전략 | ID 전략 | DB집계조회 평균 | 저장 평균 | API 전체 평균 |
+|---|---|---:|---:|---:|
+| GROUP_BY_QUERY | IDENTITY | 297.837ms | 1,105.225ms | 1,490.271ms |
+| GROUP_BY_BULK_SAVE | IDENTITY | 276.100ms | 975.471ms | 1,289.364ms |
+| GROUP_BY_QUERY | SEQUENCE | 258.032ms | 101.945ms | 755.662ms |
+| GROUP_BY_BULK_SAVE | SEQUENCE | 281.536ms | 40.449ms | 696.352ms |
+
+### 4. insert 방식 확인
+
+SQL 로그에서 insert 전에 `select nextval('settlement_seq')`가 먼저 실행되는 것을 확인했다. insert 문은 `insert into settlements (..., id) values (..., ?)` 형태로 id를 포함했다. SQL 로그에는 같은 insert 문이 반복 출력되지만, IDENTITY처럼 insert 직후 generated id를 받아야 하는 구조는 사라졌다.
+
+SEQUENCE에서는 insert 실행이 transaction flush 시점으로 밀릴 수 있다. 따라서 기존 `save_ms` 로그는 실제 DB insert 전체 시간을 모두 포함하지 않고 persist 및 sequence 할당 단계에 더 가깝다. 그래서 저장 개선 여부는 `save_ms`뿐 아니라 API 전체 시간과 함께 판단했다.
+
+### 5. 정합성 및 판단
+
+두 전략 모두 `processedCount=322,581`, Settlement 10,000건을 생성했다. 결제금액 27,066,846,805.00, 취소금액 3,387,078,413.00, 수수료 447,339,420.65, 최종 정산금액 23,232,428,971.35는 동일했다.
+
+SEQUENCE 변경 후 API 전체 평균은 GROUP_BY_QUERY 1,490.271ms에서 755.662ms로, GROUP_BY_BULK_SAVE 1,289.364ms에서 696.352ms로 줄었다. IDENTITY가 저장 batch 효율을 막는 주요 원인이라는 판단이 강화됐다.
+
+---
+
+## Troubleshooting: JPQL count(p)와 Index Only Scan 문제
+
+### 1. 문제 발견
+
+`benchmark-large-date-distributed` 조건에서 covering index를 적용한 뒤 수동 EXPLAIN은 `Index Only Scan`, `Heap Fetches=0`으로 바뀌었고 실행 시간도 약 75~119ms 수준까지 줄었다. 하지만 같은 정산일자를 API로 실행하면 DB 집계 조회 구간이 3~4초대로 측정됐다. 인덱스 자체는 효과가 있어 보이는데 API 경로에서는 같은 효과가 나타나지 않는 상황이었다.
+
+### 2. 원인 분석
+
+수동 SQL은 `count(*)`를 사용했지만, API Repository의 JPQL은 `count(p)`를 사용하고 있었다. Hibernate SQL 로그를 확인하니 JPQL `count(p)`가 실제 SQL에서는 `count(p.id)`로 변환됐다.
+
+covering index는 `transaction_date`, `status`, `merchant_id`, `type`, `amount`를 포함하지만 `id`는 포함하지 않는다. 따라서 `count(p.id)`를 수행하면 DB가 `id` 확인을 위해 heap 접근을 해야 했고, API 경로에서는 `Index Only Scan`이 아니라 `Bitmap Heap Scan`이 발생했다. 결과적으로 수동 EXPLAIN과 API 실행계획이 달라졌다.
+
+### 3. 대안 검토
+
+첫 번째 대안은 covering index에 `id`를 추가하는 것이었다. 하지만 집계 쿼리에서 실제로 필요한 값은 `id`가 아니라 row count이므로, ORM 변환 때문에 인덱스 컬럼을 늘리는 방식은 문제 원인을 우회하는 접근에 가깝다고 봤다.
+
+두 번째 대안은 JPQL을 유지하면서 다른 표현으로 count를 유도하는 것이었다. 다만 Hibernate가 최종 SQL을 어떻게 생성하는지 다시 확인해야 하고, `count(*)`를 명시적으로 보장하기 어렵다.
+
+최종 선택은 집계 쿼리를 native query로 분리하고 `count(*)`를 명시하는 것이었다. JPQL constructor projection을 사용할 수 없으므로 native query 결과는 interface projection으로 받도록 분리했다.
+
+### 4. 수정
+
+JPQL 생성자 projection 기반 집계 쿼리를 native query로 분리했다. 집계 count는 `count(*)`로 명시했고, native query 결과 매핑을 위해 interface projection을 추가했다. 이후 API 실제 SQL 로그에서 `count(*)`가 나가는지 확인했다.
+
+### 5. 검증
+
+API 경로의 EXPLAIN에서 `Parallel Index Only Scan using idx_payments_settlement_covering`, `Heap Fetches=0`, `Execution Time=74.988ms`, 결과 10,000 rows를 확인했다. 구간별 측정에서도 DB 집계 조회는 GROUP_BY_QUERY 280.836ms, GROUP_BY_BULK_SAVE 308.998ms 수준으로 줄었다.
+
+정합성도 함께 확인했다. 두 전략 모두 `processedCount=322,581`, Settlement 10,000건을 생성했고, 결제금액 27,066,846,805.00, 취소금액 3,387,078,413.00, 수수료 447,339,420.65, 최종 정산금액 23,232,428,971.35가 동일했다.
+
+### 6. 결과
+
+기본 조회 대비 최종 개선 후 EXPLAIN은 2,242.501ms에서 74.988ms로 줄었다. API 전체 시간은 GROUP_BY_QUERY가 3,021.333ms에서 1,627.667ms로, GROUP_BY_BULK_SAVE가 2,478.333ms에서 2,058.000ms로 줄었다. 단순히 인덱스를 추가한 것이 아니라, 실제 API SQL이 인덱스만으로 처리 가능한 형태인지 확인해야 개선 효과가 유지된다는 점을 확인했다.
+
+### 7. 배운 점
+
+ORM 코드와 실제 SQL은 다를 수 있다. 특히 성능 문제에서는 Repository 코드가 아니라 Hibernate SQL 로그, 바인딩 파라미터, EXPLAIN 결과를 기준으로 판단해야 한다. `count(*)`와 `count(id)`는 결과값은 같아 보여도 covering index 사용 여부에는 큰 차이를 만들 수 있다.
+
+## Troubleshooting: saveAll과 IDENTITY 전략의 batch insert 한계
+
+### 1. 문제 발견
+
+`GROUP_BY_BULK_SAVE`는 `saveAll`을 사용했지만 기대만큼 빠르지 않았다. native `count(*)` 적용 후 DB 집계조회 병목이 줄어든 상태에서도 API 전체 시간은 GROUP_BY_QUERY 1,627.667ms, GROUP_BY_BULK_SAVE 2,058.000ms로 측정됐다. 이름은 BULK_SAVE였지만 실제 저장 경로가 DB 관점의 bulk insert인지 확인이 필요했다.
+
+### 2. 원인 분석
+
+SQL 로그를 확인하니 `insert into settlements (...) values (...)`가 Settlement 10,000건에 대해 개별 반복으로 출력됐다. multi-row insert나 명확한 JDBC batch insert 형태는 확인되지 않았다.
+
+설정도 다시 확인했다. `dummy-data.batch-size`와 `benchmark.batch-size`는 더미 데이터 생성 chunk 설정이지 Hibernate insert batch 설정이 아니었다. 당시 기본 설정에는 `spring.jpa.properties.hibernate.jdbc.batch_size`, `hibernate.order_inserts`, `hibernate.order_updates`가 없었다. 또한 `Settlement.id`가 `GenerationType.IDENTITY`였고, IDENTITY는 insert 후 DB가 생성한 id를 받아야 하므로 Hibernate batch insert에 불리하다.
+
+### 3. 대안 검토
+
+첫 번째 대안은 `saveAll`만 유지하고 더 이상 변경하지 않는 것이었다. 하지만 SQL 로그상 개별 insert가 반복되므로 저장 병목을 설명하기 어렵다.
+
+두 번째 대안은 Hibernate `jdbc.batch_size`, `order_inserts`, `order_updates`만 적용하는 것이었다. 실제로 별도 profile에서 `batch_size=1000`을 실험했고 API 시간은 줄었지만, IDENTITY 제약과 개별 insert 로그가 남아 true bulk insert라고 단정하기는 어려웠다.
+
+세 번째 대안은 id 생성 전략을 SEQUENCE로 바꾸는 것이었다. 정산 저장 후 애플리케이션에서 generated id를 즉시 사용하지 않으므로, id를 미리 확보하는 SEQUENCE 전략이 Hibernate batch 처리에 더 적합하다고 판단했다.
+
+### 4. 수정 및 실험
+
+별도 benchmark profile에서 Hibernate `jdbc.batch_size=1000`, `order_inserts=true`, `order_updates=true`를 실험했다. 이후 `Settlement.id`를 IDENTITY에서 SEQUENCE로 변경하고, `settlement_seq`, `allocationSize=1000`을 적용했다. 기존 로컬 데이터와 sequence 발급 id가 충돌하지 않도록 `LocalSchemaMigrationRunner`에서 기존 `max(id)+1000` 이후로 `settlement_seq`를 `setval` 보정했다.
+
+### 5. 검증
+
+IDENTITY 유지 + Hibernate batch 설정에서는 GROUP_BY_QUERY API 전체 평균 1,490.271ms, GROUP_BY_BULK_SAVE API 전체 평균 1,289.364ms를 기록했다. SEQUENCE 변경 후에는 GROUP_BY_QUERY 755.662ms, GROUP_BY_BULK_SAVE 696.352ms로 줄었다. 감소율은 각각 약 49%, 약 46%다.
+
+SQL 로그에서는 insert 전에 `select nextval('settlement_seq')`가 실행되고 insert 문에 `id` 값이 포함되는 것을 확인했다. SEQUENCE에서는 insert가 flush 시점으로 지연될 수 있으므로 `save_ms`만으로 판단하지 않고 API 전체 시간을 함께 봤다.
+
+정합성도 유지됐다. 두 전략 모두 `processedCount=322,581`, Settlement 10,000건을 생성했고, 결제금액 27,066,846,805.00, 취소금액 3,387,078,413.00, 수수료 447,339,420.65, 최종 정산금액 23,232,428,971.35가 동일했다.
+
+### 6. 결과
+
+`saveAll`은 코드상 일괄 저장 호출이지만, 설정과 ID 전략에 따라 실제 DB bulk insert처럼 동작하지 않을 수 있다는 점을 확인했다. IDENTITY 전략에서는 Hibernate batch insert 효과가 제한됐고, SEQUENCE + allocationSize 적용 후 저장 구간과 API 전체 시간이 크게 개선됐다.
+
+### 7. 배운 점
+
+성능 개선은 메서드 이름이나 프레임워크 기대 동작만으로 판단하면 안 된다. `saveAll`을 썼다는 사실보다 SQL 로그에서 실제 insert가 어떻게 나가는지 확인하는 것이 중요하다. 금융 정산 배치에서는 성능 개선 후에도 처리 건수와 금액 합계가 동일한지 함께 확인해야 한다.
+
+## 오늘의 학습 포인트
+
+- 기능 구현에서 끝내지 않고 실제 실행계획과 SQL 로그를 확인해야 병목을 정확히 설명할 수 있다.
+- 수동 SQL과 API SQL은 다를 수 있으므로, API 경로의 실제 SQL과 EXPLAIN을 기준으로 판단해야 한다.
+- covering index는 쿼리에 필요한 컬럼을 모두 인덱스에서 해결할 때 효과가 있으며, `count(*)`와 `count(id)` 차이도 실행계획을 바꿀 수 있다.
+- `saveAll`은 JPA 호출 구조를 단순화할 뿐이며, Hibernate batch 설정과 ID 생성 전략에 따라 실제 insert 방식은 달라진다.
+- 금융 IT 관점에서는 성능 수치뿐 아니라 `processedCount`, Settlement 건수, 총액 동일성으로 정합성을 함께 확인해야 한다.
+
+## 면접 설명용 요약
+
+인덱스 적용 후 수동 SQL은 빨랐지만 API는 여전히 느렸고, 실제 SQL을 확인해 JPQL `count(p)`가 `count(p.id)`로 변환되는 문제를 찾았습니다. native query에서 `count(*)`를 명시하고 interface projection으로 결과를 받도록 바꿔 API에서도 `Index Only Scan`, `Heap Fetches=0`이 나오도록 확인했습니다. 이후 DB 집계조회 시간이 수백 ms대로 줄었고, 처리 건수와 총액 정합성도 유지했습니다. `saveAll`도 실제 bulk insert처럼 동작하는지 SQL 로그로 확인했고, 개별 insert가 반복되는 것을 확인했습니다. `dummy-data.batch-size`와 `benchmark.batch-size`는 Hibernate batch 설정이 아니라는 점, 그리고 IDENTITY 전략이 batch insert에 불리하다는 점을 확인했습니다. Hibernate batch 설정과 SEQUENCE 전략을 실험해 GROUP_BY_QUERY API 전체 시간은 약 49%, GROUP_BY_BULK_SAVE API 전체 시간은 약 46% 줄었습니다. 이 과정에서 성능 개선은 감이 아니라 실행계획, SQL 로그, 구간별 측정, 정합성 검증을 함께 기준으로 판단해야 한다는 점을 배웠습니다.

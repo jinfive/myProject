@@ -63,7 +63,7 @@
 현재 상태:
 
 ```txt
-정산 배치 성능 비교용 MVP 중 GROUP_BY_QUERY 구현 완료
+정산 배치 성능 비교용 MVP 중 GROUP_BY_BULK_SAVE 1차 구현 완료
 ```
 
 현재 구현된 기능:
@@ -76,6 +76,7 @@
     - 특정일 거래 약 70,000건
 - BASIC_LOOP 정산 배치 구현
 - GROUP_BY_QUERY 정산 배치 구현
+- GROUP_BY_BULK_SAVE 1차 정산 배치 구현
 - 정산 실행 API 구현
     - POST /api/settlements/run
 - 정산 결과 조회 API 구현
@@ -529,7 +530,7 @@ README와 PPT에 처리 시간 비교표와 개선 이유를 정리한다.
 
 현재 목표는 1단계 배치 성능 개선 프로젝트를 완성하는 것이다.
 
-현재는 BASIC_LOOP 기준선과 GROUP_BY_QUERY 개선 전략이 구현되어 있다. 앞으로의 작업은 성능 개선을 단계별로 분리하고, 각 단계가 끝날 때마다 README/PPT에 설명 가능한 기록을 남기는 방식으로 진행한다.
+현재는 BASIC_LOOP 기준선, GROUP_BY_QUERY 개선 전략, GROUP_BY_BULK_SAVE 1차 saveAll 적용이 구현되어 있다. 앞으로의 작업은 성능 개선을 단계별로 분리하고, 각 단계가 끝날 때마다 README/PPT에 설명 가능한 기록을 남기는 방식으로 진행한다.
 
 ```txt
 문제 인식
@@ -540,35 +541,66 @@ README와 PPT에 처리 시간 비교표와 개선 이유를 정리한다.
 → 배운 점
 ```
 
-앞으로의 구현 순서는 다음으로 고정한다.
+앞으로의 실험과 구현 순서는 다음으로 정리한다.
 
 ```txt
-1. GROUP_BY_QUERY 구현
-2. BASIC_LOOP와 결과 동일성 검증
-3. GROUP_BY_BULK_SAVE 구현
-4. GROUP_BY_BULK_INDEX 구현
-5. EXPLAIN ANALYZE로 실행 계획 확인
-6. 대사 기능 추가
-7. RUNNING 중복 실행 방지
-8. 날짜 파티셔닝은 고도화 항목으로 문서화
+1. 10만 건 / Merchant 100개 기준 실험 정리
+2. 100만 건 / Merchant 5,000개 중간 확장 실험
+3. 1000만 건 / Merchant 5,000~10,000개 최종 대용량 실험
+4. 2026년 5월 날짜 분산 benchmark-large 실험
+5. 저장 병목 확인 시 Hibernate batch_size 적용 검토
+6. 저장 병목이 계속 남으면 PostgreSQL reWriteBatchedInserts 적용 검토
+7. 1000만 건 조회 병목 확인 시 GROUP_BY_BULK_INDEX 구현
+8. EXPLAIN ANALYZE로 실행 계획 확인
+9. 대사 기능 추가
+10. RUNNING 중복 실행 방지
+11. 날짜 파티셔닝은 고도화 항목으로 문서화
 ```
 
-이 순서는 임의로 바꾸지 않는다. 각 단계는 독립된 개선 액션으로 관리하고, 다음 단계로 넘어가기 전에 검증 결과와 README 반영 내용을 남긴다.
+각 단계는 독립된 개선 액션으로 관리하고, 다음 단계로 넘어가기 전에 검증 결과와 README 반영 내용을 남긴다. 현재 10만 건 기준에서는 GROUP_BY_QUERY 적용만으로 충분한 성능 개선을 확인했으므로, 인덱스와 batch 설정은 바로 적용하지 않고 100만/1000만 건 측정 결과를 보고 판단한다.
 
 단계별 기준:
 
 | 순서 | 단계 | 핵심 의미 | README/PPT 기록 포인트 |
 |---:|---|---|---|
-| 1 | GROUP_BY_QUERY | Payment 전체 조회 제거, DB GROUP BY 집계 적용 | 애플리케이션으로 가져오는 데이터량을 줄였다 |
-| 2 | 결과 동일성 검증 | 성능 개선 후에도 금액 결과가 기준선과 같은지 검증 | 성능보다 정합성을 먼저 확인했다 |
-| 3 | GROUP_BY_BULK_SAVE | GROUP BY 집계는 유지하고 Settlement 저장 방식을 일괄 저장으로 개선 | 개별 save 반복 호출을 줄였다 |
-| 4 | GROUP_BY_BULK_INDEX | 정산 조회 조건과 GROUP BY 조건에 맞는 인덱스 적용 | 조회 조건에 맞는 인덱스를 판단해 적용했다 |
-| 5 | EXPLAIN ANALYZE | 인덱스가 실제 실행 계획에서 사용되는지 확인 | Seq Scan/Index Scan, 실행 시간, rows 예측 차이를 확인했다 |
-| 6 | 대사 기능 | 원천 Payment와 Settlement 결과 일치 검증 | 성능 개선 후에도 결과 정합성이 유지됨을 증명했다 |
-| 7 | RUNNING 중복 실행 방지 | 같은 날짜와 같은 전략의 동시 실행 차단 | 반복 클릭과 동시 요청으로 인한 DB 부하와 충돌을 막았다 |
-| 8 | 날짜 파티셔닝 문서화 | 장기 데이터 누적에 대비한 확장 방향 정리 | 실제 구현이 아니라 고도화 항목으로 남겼다 |
+| 1 | 10만 건 기준 실험 | Payment 100,000건, Merchant 100개로 기준선과 GROUP BY 효과 확인 | GROUP_BY_QUERY가 가장 큰 개선 효과를 만들었다 |
+| 2 | 100만 건 중간 확장 | Payment 1,000,000건, Merchant 5,000개로 정합성·시간·메모리 확인 | BASIC_LOOP 8,253ms, GROUP_BY_QUERY 899ms, GROUP_BY_BULK_SAVE 798ms를 측정했다 |
+| 3 | 1000만 건 대용량 실험 | Payment 10,000,000건, Merchant 10,000개로 최종 검증 | 쿼리 구조 개선 후 GROUP_BY_QUERY 4,796ms, GROUP_BY_BULK_SAVE 4,149ms를 측정했다 |
+| 4 | 1000만 건 날짜 분산 실험 | Payment 10,000,000건을 2026년 5월 31일에 분산 | 단일 날짜 편중을 제거해 transaction_date 인덱스 선택도를 다시 검증한다 |
+| 5 | Hibernate batch_size | 저장 건수가 5,000건 이상 늘고 saveAll만으로 부족할 때 검토 | 저장 병목을 확인한 뒤 설정 효과를 분리 측정한다 |
+| 6 | PostgreSQL reWriteBatchedInserts | batch 설정 후에도 저장 병목이 남을 때 검토 | JDBC 드라이버 옵션 효과가 실제로 있는지 확인한다 |
+| 7 | GROUP_BY_BULK_INDEX | 1000만 건 조회 병목이 확인될 때 인덱스 적용 | 불필요한 인덱스 비용을 피하고 병목 기반으로 적용했다 |
+| 8 | EXPLAIN ANALYZE | 인덱스가 실제 실행 계획에서 사용되는지 확인 | Seq Scan/Index Scan, 실행 시간, rows 예측 차이를 확인했다 |
+| 9 | 대사 기능 | 원천 Payment와 Settlement 결과 일치 검증 | 성능 개선 후에도 결과 정합성이 유지됨을 증명했다 |
+| 10 | RUNNING 중복 실행 방지 | 같은 날짜와 같은 전략의 동시 실행 차단 | 반복 클릭과 동시 요청으로 인한 DB 부하와 충돌을 막았다 |
+| 11 | 날짜 파티셔닝 문서화 | 장기 데이터 누적에 대비한 확장 방향 정리 | 실제 구현이 아니라 고도화 항목으로 남겼다 |
 
 작업별 README 기록 형식:
+
+1000만 건 실행계획 기준 다음 개선 순서는 다음으로 관리한다.
+
+| 순서 | 개선 후보 | 확인할 병목 | 판단 기준 |
+|---:|---|---|---|
+| 1 | 세션 단위 `work_mem` 실험 | `HashAggregate` temp disk spill | temp read/write, HashAggregate batches, Execution Time 감소 여부 |
+| 2 | 일반 covering index 실험 | `payments` heap read와 전체 스캔 비용 | `Index Only Scan` 가능성, Buffers read/hit, Execution Time 변화 |
+| 3 | 날짜 분산 데이터셋 또는 사전 집계 테이블 | 단일 날짜 1000만 건 전체 스캔 | 날짜 조건의 선택도 확보 여부 또는 사전 집계 필요성 |
+
+현재 benchmark-large 데이터는 `2026-05-15` 단일 날짜에 1000만 건이 몰려 있고 `status`가 모두 `COMPLETED`라 partial index 효과는 낮을 가능성이 크다. 따라서 인덱스를 바로 추가하지 않고, 먼저 `work_mem` 세션 실험과 일반 covering index 실험으로 병목을 분리해 확인한다.
+
+`work_mem` 세션 실험에서는 기본 4MB에서 HashAggregate가 5 batches로 temp read/write를 발생시켰고, 64MB부터 batches 1과 temp read/write 0을 확인했다. 128MB는 2,645.038ms, 256MB는 2,645.408ms로 차이가 거의 없었으므로 다음 개선 후보는 일반 covering index 실험으로 둔다.
+
+GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE는 같은 GROUP BY 집계 쿼리를 사용하며, benchmark-large API 기준 차이는 4,796ms와 4,149ms로 약 647ms였다. 저장 방식 차이는 확인됐지만, 실행계획에서 GROUP_BY_QUERY 집계 쿼리만 약 2,979ms가 걸렸고 temp spill과 Parallel Seq Scan이 확인됐으므로 현재 병목 우선순위는 저장보다 조회/집계 개선으로 둔다.
+
+날짜 분산 데이터셋에서는 `benchmark-large-date-distributed` 생성과 인덱스 없는 기준선 측정을 완료했다. Payment 10,000,000건은 2026-05-01부터 2026-05-31까지 분산되어 있고, targetDate 2026-05-17의 대상 Payment는 322,581건이다. 현재 `payments`에는 `payments_pkey`만 남겨 두었으며, 실행계획상 322,581건을 찾기 위해 약 967만 건이 filter에서 제거되어 `Parallel Seq Scan`이 주 병목으로 남아 있다. 이번 후속 실험에서는 `work_mem`을 변경하지 않는다.
+
+다음 인덱스 실험은 바로 covering index로 가지 않고 단순 인덱스부터 단계적으로 검증한다.
+
+| 순서 | 인덱스 후보 | 목적 | 판단 기준 |
+|---:|---|---|---|
+| 1 | `payments(transaction_date)` | 날짜 조건만으로 `Parallel Seq Scan`이 줄어드는지 확인 | Execution Time, Scan 방식, Rows Removed by Filter, Buffers hit/read |
+| 2 | `payments(transaction_date, status, merchant_id)` | where 조건과 group by 기준까지 고려했을 때 더 좋아지는지 확인 | `Index Scan`/`Bitmap Index Scan` 사용 여부, temp read/write, API 전략별 실행 시간, 정산 합계 동일성 |
+
+실험 대상 API는 `GROUP_BY_QUERY`와 `GROUP_BY_BULK_SAVE`로 제한하고, 두 전략의 결제금액, 취소금액, 순매출, 수수료, 최종 정산금액 합계가 동일한지 함께 확인한다.
 
 ```md
 ## 진행 기록

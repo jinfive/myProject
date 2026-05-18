@@ -73,7 +73,7 @@
 현재 구현 상태:
 
 ```txt
-정산 배치 성능 비교용 MVP 중 GROUP_BY_QUERY 구현 완료
+정산 배치 성능 비교용 MVP 중 GROUP_BY_BULK_SAVE 1차 구현 완료
 ```
 
 현재 구현된 기능:
@@ -87,6 +87,7 @@
     * 특정일 거래 약 70,000건
 * BASIC_LOOP 정산 배치 구현
 * GROUP_BY_QUERY 정산 배치 구현
+* GROUP_BY_BULK_SAVE 1차 정산 배치 구현
 * 정산 실행 API 구현
 * 정산 결과 조회 API 구현
 * 배치 이력 조회 API 구현
@@ -666,7 +667,7 @@ GROUP_BY_BULK_INDEX
 
 ### 10.2 GROUP_BY_QUERY
 
-향후 구현할 쿼리 개선 전략이다.
+구현 완료된 쿼리 개선 전략이다.
 
 흐름:
 
@@ -690,14 +691,14 @@ Payment 전체 조회 제거
 
 ### 10.3 GROUP_BY_BULK_SAVE
 
-향후 구현할 저장 성능 개선 전략이다.
+1차 구현이 완료된 저장 성능 개선 전략이다.
 
 흐름:
 
 ```txt
-Settlement를 한 건씩 저장하지 않음
+DB GROUP BY 집계 결과 재사용
 → 정산 결과 목록을 생성
-→ saveAll 또는 batch insert 적용
+→ settlementRepository.saveAll 적용
 → 반복적인 DB 저장 호출 감소
 → 실행 시간 기록
 ```
@@ -705,6 +706,14 @@ Settlement를 한 건씩 저장하지 않음
 목적:
 
 * 저장 구간 병목 완화
+* 저장 방식 변경 후 결과 누락 여부 검증
+* BASIC_LOOP, GROUP_BY_QUERY와 금액 정합성 비교
+
+범위:
+
+* 이번 단계에서는 `saveAll`만 적용한다.
+* Hibernate `batch_size`, `order_inserts`, PostgreSQL JDBC `reWriteBatchedInserts=true`는 100만/1000만 건 실험에서 저장 병목이 확인된 뒤 분리 검토한다.
+* GROUP_BY_BULK_INDEX와 인덱스 적용은 아직 구현하지 않는다.
 * 반복적인 save 호출 감소
 * 대량 정산 결과 저장 성능 개선
 
@@ -712,7 +721,7 @@ Settlement를 한 건씩 저장하지 않음
 
 ### 10.4 GROUP_BY_BULK_INDEX
 
-향후 구현할 인덱스 적용 전략이다.
+향후 구현할 인덱스 적용 전략이다. 현재 10만 건 / Merchant 100개 기준에서는 GROUP_BY_QUERY만으로 충분한 개선을 확인했으므로 인덱스를 즉시 적용하지 않는다.
 
 흐름:
 
@@ -723,16 +732,19 @@ Settlement를 한 건씩 저장하지 않음
 → 결과를 README와 PPT에 기록
 ```
 
-우선 고려할 인덱스:
+인덱스 적용 검토 조건:
 
 ```txt
-payment_date
-merchant_id
-payment_status
-payment_type
-payment_date + merchant_id
-payment_date + merchant_id + payment_type
-settlement_date + merchant_id
+1000만 건에서 GROUP_BY_QUERY가 수 초 이상 걸림
+EXPLAIN ANALYZE에서 payments 전체 스캔 비용이 큼
+transaction_date/status/merchant_id 조건 조회 비용이 큼
+```
+
+후보 인덱스:
+
+```sql
+create index idx_payments_transaction_date_status_merchant
+on payments (transaction_date, status, merchant_id);
 ```
 
 목적:
@@ -740,6 +752,36 @@ settlement_date + merchant_id
 * 정산 대상 데이터 조회 속도 개선
 * GROUP BY 집계 조건 최적화
 * 중복 정산 검증 속도 개선
+
+---
+
+### 10.5 benchmark-medium 데이터셋
+
+100만 건 중간 확장 실험을 위해 `benchmark-medium` 프로파일을 추가했다.
+
+조건:
+
+```txt
+Merchant: 5,000개
+Payment: 1,000,000건
+Settlement 예상: 전략별 최대 5,000건
+정산일자: 실행일 기준 오늘
+```
+
+재생성 정책:
+
+```txt
+benchmark.reset-enabled=true
+→ settlements 삭제
+→ payments 삭제
+→ merchants 삭제
+→ merchants 5,000개 생성
+→ payments 1,000,000건 생성
+```
+
+`batch_job_histories`는 실행 이력이므로 삭제하지 않는다. 이 기능은 운영 기능이 아니라 로컬 벤치마크용 데이터 재생성 기능이며, 기본 실행에서는 비활성화되어 있다.
+
+기존 10만 건 데이터에 90만 건을 단순 추가하지 않는 이유는 Merchant 분포가 섞이면 조회 병목과 저장 병목을 비교하는 조건이 불명확해지기 때문이다.
 
 ---
 
@@ -1160,17 +1202,19 @@ README와 PPT는 항상 `문제 → 판단 → 액션 → 검증 → 결과` 흐
 현재 기준으로 다음 순서로 작업한다.
 
 ```txt
-1. GROUP_BY_QUERY 구현
-2. BASIC_LOOP와 결과 동일성 검증
-3. GROUP_BY_BULK_SAVE 구현
-4. GROUP_BY_BULK_INDEX 구현
-5. EXPLAIN ANALYZE로 실행 계획 확인
-6. 대사 기능 추가
-7. RUNNING 중복 실행 방지
-8. 날짜 파티셔닝은 고도화 항목으로 문서화
+1. 10만 건 / Merchant 100개 기준 실험 정리
+2. 100만 건 / Merchant 5,000개 중간 확장 실험
+3. 1000만 건 / Merchant 5,000~10,000개 최종 대용량 실험
+4. 저장 병목 확인 시 Hibernate batch_size 적용 검토
+5. 저장 병목이 계속 남으면 PostgreSQL reWriteBatchedInserts 적용 검토
+6. 1000만 건 조회 병목 확인 시 GROUP_BY_BULK_INDEX 구현
+7. EXPLAIN ANALYZE로 실행 계획 확인
+8. 대사 기능 추가
+9. RUNNING 중복 실행 방지
+10. 날짜 파티셔닝은 고도화 항목으로 문서화
 ```
 
-이 순서는 임의로 바꾸지 않는다. 현재 GROUP_BY_QUERY와 BASIC_LOOP 결과 동일성 검증은 완료된 상태이므로 다음 구현 작업은 GROUP_BY_BULK_SAVE이다.
+현재 GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE 1차 saveAll 적용은 완료된 상태이다. 다음은 최적화 설정을 바로 추가하기보다 100만 건과 1000만 건으로 데이터 규모와 Merchant 수를 확장해 조회 병목과 저장 병목을 분리해서 확인하는 단계이다.
 
 ---
 

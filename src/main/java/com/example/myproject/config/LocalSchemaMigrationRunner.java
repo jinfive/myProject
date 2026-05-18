@@ -5,6 +5,7 @@ import java.util.Objects;
 import javax.sql.DataSource;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -12,6 +13,7 @@ import org.springframework.stereotype.Component;
 
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE)
+@ConditionalOnProperty(name = "local-schema-migration.enabled", havingValue = "true", matchIfMissing = true)
 public class LocalSchemaMigrationRunner implements ApplicationRunner {
 
     private final DataSource dataSource;
@@ -33,6 +35,7 @@ public class LocalSchemaMigrationRunner implements ApplicationRunner {
         }
 
         migrateProcessingStrategy();
+        migrateSettlementSequence();
     }
 
     private void migrateProcessingStrategy() {
@@ -89,6 +92,21 @@ public class LocalSchemaMigrationRunner implements ApplicationRunner {
                             unique (merchant_id, settlement_date, processing_strategy);
                     end if;
                 end $$;
+                """);
+    }
+
+    private void migrateSettlementSequence() {
+        if (!tableExists("settlements")) {
+            return;
+        }
+
+        jdbcTemplate.execute("create sequence if not exists settlement_seq increment by 1000");
+        jdbcTemplate.execute("""
+                select setval(
+                    'settlement_seq',
+                    greatest((select coalesce(max(id), 0) + 1000 from settlements), 1000),
+                    false
+                )
                 """);
     }
 

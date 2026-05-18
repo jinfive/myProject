@@ -100,8 +100,68 @@ BASIC_LOOP는 Payment 전체 Entity를 애플리케이션으로 가져와 집계
 
 ### 30초 답변
 
-다음은 GROUP_BY_BULK_SAVE입니다. GROUP_BY_QUERY의 DB 집계는 유지하고 Settlement 저장을 개별 save에서 saveAll 또는 batch insert로 개선해 저장 병목을 분리해서 측정할 계획입니다.
+다음은 Hibernate batch_size와 PostgreSQL reWriteBatchedInserts 적용 검토입니다. GROUP_BY_BULK_SAVE 1차에서 saveAll만 적용했기 때문에, 실제 DB batch insert 효과는 다음 단계에서 분리해 측정할 계획입니다.
 
 ### 1분 답변
 
-현재 GROUP_BY_QUERY는 조회와 집계 병목을 줄였지만 Settlement 저장은 개별 저장으로 유지했습니다. 다음 단계는 GROUP_BY_BULK_SAVE로, DB GROUP BY 집계 결과를 유지하면서 저장 방식을 saveAll이나 Hibernate batch insert로 바꾸는 것입니다. 이후 GROUP_BY_BULK_INDEX에서 조회 조건 기준 인덱스를 적용하고, EXPLAIN ANALYZE로 실제 실행 계획을 확인할 계획입니다. 성능 개선과 별도로 원천 Payment와 Settlement 결과 대사 기능도 추가해야 합니다.
+현재 GROUP_BY_BULK_SAVE 1차에서는 DB GROUP BY 집계 결과를 유지하면서 Settlement 저장을 saveAll 기반으로 바꿨습니다. 다만 saveAll만으로 실제 JDBC batch insert 효과를 단정할 수 없기 때문에 다음 단계에서는 Hibernate batch_size, order_inserts, PostgreSQL reWriteBatchedInserts 옵션을 분리 적용해 비교할 계획입니다. 이후 GROUP_BY_BULK_INDEX에서 조회 조건 기준 인덱스를 적용하고, EXPLAIN ANALYZE로 실제 실행 계획을 확인할 계획입니다. 성능 개선과 별도로 원천 Payment와 Settlement 결과 대사 기능도 추가해야 합니다.
+
+---
+
+## saveAll을 적용하면 바로 벌크 저장이라고 볼 수 있나요?
+
+### 30초 답변
+
+코드상으로는 개별 save 반복을 줄이고 일괄 저장 구조를 만든 것입니다. 다만 JPA/Hibernate에서 실제 DB batch insert 효과를 보려면 `hibernate.jdbc.batch_size` 같은 설정이 추가로 필요할 수 있습니다. 그래서 이번 단계에서는 saveAll만 적용하고, batch 설정과 JDBC 옵션은 다음 단계로 분리했습니다.
+
+### 1분 답변
+
+`saveAll`은 여러 Entity를 한 번에 repository에 전달한다는 점에서 코드 구조상 일괄 저장에 가깝습니다. 하지만 Hibernate가 실제로 JDBC batch insert를 수행하려면 `hibernate.jdbc.batch_size`, `order_inserts` 같은 설정과 DB 드라이버 옵션이 필요할 수 있습니다. 그래서 이번 작업에서는 saveAll 적용 자체와 정합성 검증에 집중했습니다. 이후 Hibernate batch_size와 PostgreSQL `reWriteBatchedInserts=true`를 별도 단계로 적용해 성능 차이를 분리 측정할 계획입니다.
+
+---
+
+## saveAll 적용 후 어떤 정합성 검증을 했나요?
+
+### 30초 답변
+
+집계 결과 건수, 생성한 Settlement 수, 실제 저장된 Settlement 수가 일치하는지 확인했습니다. 그리고 BASIC_LOOP, GROUP_BY_QUERY, GROUP_BY_BULK_SAVE의 가맹점별 결제금액, 취소금액, 수수료, 최종 정산금액이 같은지 테스트했습니다.
+
+### 1분 답변
+
+저장 방식을 바꾸면 일부 결과가 누락되거나 금액이 달라지는 리스크가 있다고 봤습니다. 그래서 먼저 DB GROUP BY 집계 결과 건수와 생성 Settlement 수, 저장된 Settlement 수를 비교했습니다. 그 다음 BASIC_LOOP, GROUP_BY_QUERY, GROUP_BY_BULK_SAVE를 같은 날짜와 같은 Payment 데이터로 실행하고, 가맹점별 총 결제금액, 총 취소금액, 순매출, 수수료, 최종 정산금액이 동일한지 검증했습니다. 실패 케이스에서는 Settlement가 롤백되고 BatchJobHistory에 FAILED와 errorMessage가 남는지도 확인했습니다.
+
+---
+
+## 저장 건수가 누락되지 않았는지는 어떻게 확인했나요?
+
+### 30초 답변
+
+DB GROUP BY 집계 결과의 가맹점 수와 saveAll 후 실제 저장된 Settlement 수를 비교했습니다. 테스트에서는 두 값이 같아야 성공하도록 했고, 100,000건 API 검증에서도 100건이 저장되는 것을 확인했습니다.
+
+### 1분 답변
+
+GROUP_BY_BULK_SAVE는 Payment 전체 Entity가 아니라 가맹점별 집계 결과를 기준으로 Settlement를 생성합니다. 따라서 집계 결과 건수와 생성 Settlement 수, 저장 Settlement 수가 같아야 합니다. 이 값을 자동 테스트로 검증했고, 수동 API 검증에서도 Payment 100,000건 기준으로 GROUP_BY_BULK_SAVE가 정산 결과 100건을 생성하는 것을 BatchJobHistory와 API 응답으로 확인했습니다.
+
+---
+
+## Hibernate batch_size는 왜 다음 단계로 분리했나요?
+
+### 30초 답변
+
+saveAll, Hibernate batch_size, PostgreSQL JDBC 옵션을 한 번에 넣으면 어떤 변경이 성능에 영향을 줬는지 설명하기 어렵기 때문입니다. 포트폴리오에서는 개선 원인을 단계별로 보여주는 것이 중요해서 saveAll만 먼저 적용했습니다.
+
+### 1분 답변
+
+이번 프로젝트는 단순히 빠르게 만드는 것보다 어떤 병목을 어떤 방식으로 줄였는지 설명할 수 있어야 합니다. saveAll과 Hibernate batch_size, PostgreSQL `reWriteBatchedInserts`를 한 번에 적용하면 성능 차이가 나도 원인을 분리하기 어렵습니다. 그래서 GROUP_BY_BULK_SAVE 1차에서는 saveAll만 적용하고 저장 건수와 금액 정합성을 검증했습니다. 다음 단계에서 batch_size와 JDBC 옵션을 각각 적용해 실제 효과가 있는지 별도로 측정할 계획입니다.
+
+---
+
+## 성능 개선 과정에서 정합성을 어떻게 유지했나요?
+
+### 30초 답변
+
+각 개선 전략이 같은 Payment 데이터와 같은 정산일자를 기준으로 같은 금액 결과를 내는지 확인했습니다. 중복 기준은 가맹점, 정산일자, 처리 전략으로 유지했고, 실패 시 Settlement는 롤백하고 BatchJobHistory는 FAILED로 남겼습니다.
+
+### 1분 답변
+
+성능 개선 단계마다 계산식은 바꾸지 않고 조회와 저장 방식만 분리해서 변경했습니다. BASIC_LOOP, GROUP_BY_QUERY, GROUP_BY_BULK_SAVE 모두 같은 결제금액, 취소금액, 수수료, 최종 정산금액을 내는지 자동 테스트와 API 검증으로 확인했습니다. 또한 같은 날짜와 같은 전략의 재실행은 중복으로 차단하고, 실패가 발생하면 Settlement는 전체 롤백되며 BatchJobHistory에는 실패 상태와 원인이 남도록 유지했습니다.

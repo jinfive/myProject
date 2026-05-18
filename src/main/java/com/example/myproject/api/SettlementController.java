@@ -10,6 +10,8 @@ import java.util.List;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -22,6 +24,8 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api")
 public class SettlementController {
 
+    private static final Logger log = LoggerFactory.getLogger(SettlementController.class);
+
     private final BasicLoopSettlementService settlementService;
 
     public SettlementController(BasicLoopSettlementService settlementService) {
@@ -33,13 +37,27 @@ public class SettlementController {
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
             @RequestParam(defaultValue = "BASIC_LOOP") SettlementStrategy strategy
     ) {
+        long apiStartedAt = System.nanoTime();
         SettlementRunResult result = settlementService.run(date, strategy);
-        return SettlementSummaryResponse.of(
+        long responseStartedAt = System.nanoTime();
+        SettlementSummaryResponse response = SettlementSummaryResponse.of(
                 strategy,
                 result.batchJobHistory().getProcessedCount(),
                 result.batchJobHistory().getElapsedMs(),
                 result.settlements()
         );
+        long responseElapsedNanos = System.nanoTime() - responseStartedAt;
+        long apiElapsedNanos = System.nanoTime() - apiStartedAt;
+        log.info(
+                "settlement timing date={} strategy={} section=api response_ms={} total_ms={} processed_count={} settlement_count={}",
+                date,
+                strategy,
+                toMillis(responseElapsedNanos),
+                toMillis(apiElapsedNanos),
+                response.processedCount(),
+                response.settlements().size()
+        );
+        return response;
     }
 
     @GetMapping("/settlements")
@@ -90,5 +108,9 @@ public class SettlementController {
     }
 
     public record ResetSettlementsResponse(LocalDate date, int deletedCount) {
+    }
+
+    private double toMillis(long nanos) {
+        return nanos / 1_000_000.0;
     }
 }

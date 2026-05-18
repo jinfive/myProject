@@ -37,6 +37,11 @@ public class DummyDataRunner implements ApplicationRunner {
             return;
         }
 
+        if (benchmarkDataProperties.isResetEnabled()) {
+            dummyDataService.regenerateBenchmark(benchmarkDataProperties);
+            return;
+        }
+
         boolean paymentAlreadyExists = paymentRepository.count() > 0;
         dummyDataService.generateIfEmpty();
 

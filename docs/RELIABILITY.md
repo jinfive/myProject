@@ -41,7 +41,7 @@
 2단계: 실시간 주식 시세 API 기반 모의 주문·체결 처리 시스템
 ```
 
-현재는 1단계인 **정산 배치 성능 비교용 MVP 중 GROUP_BY_QUERY 구현 완료** 단계이다.
+현재는 1단계인 **정산 배치 성능 비교용 MVP 중 GROUP_BY_BULK_SAVE 1차 구현 완료** 단계이다.
 
 현재 구현된 기능:
 
@@ -53,6 +53,7 @@
     - 특정일 거래 약 70,000건
 - BASIC_LOOP 정산 배치 구현
 - GROUP_BY_QUERY 정산 배치 구현
+- GROUP_BY_BULK_SAVE 1차 정산 배치 구현
 - 정산 실행 API 구현
     - `POST /api/settlements/run`
 - 정산 결과 조회 API 구현
@@ -131,6 +132,7 @@
 - 성능 측정 조건 불일치
 - 더미 데이터 중복 생성
 - 테스트 부족으로 계산 오류 미탐지
+- 로컬 프론트엔드와 백엔드 origin 차이로 인한 CORS preflight 실패
 
 ---
 
@@ -175,6 +177,21 @@
 - 실패 후 재실행 가능 여부를 판단할 수 있어야 한다.
 - BatchJobHistory 상태 check constraint는 `RUNNING`, `SUCCESS`, `FAILED`를 모두 허용해야 한다.
 - 기존 로컬 DB의 check constraint가 새 enum 값을 허용하지 않는 경우 이력을 삭제하지 않고 제약조건만 갱신한다.
+
+---
+
+## 5.1.1 로컬 CORS 실패
+
+로컬 개발에서 Vite 프론트엔드는 `http://localhost:5173`, Spring Boot 백엔드는 `http://localhost:8080`으로 실행된다.
+
+정산 결과 초기화는 `DELETE /api/settlements?date=...` 요청을 사용하므로 브라우저가 OPTIONS preflight를 먼저 보낸다.
+
+대응 기준:
+
+- `/api/**` CORS 허용 origin은 로컬 개발 주소로 제한한다.
+- `DELETE`와 `OPTIONS`를 허용 메서드에 포함한다.
+- CORS 설정으로 해결하되, 로그인/JWT/Spring Security 구조를 불필요하게 추가하지 않는다.
+- 정산 결과 초기화는 `settlements`만 삭제하고 `payments`, `merchants`, `batch_job_histories`는 보존한다.
 
 ---
 
@@ -717,6 +734,18 @@ GROUP_BY_BULK_INDEX
 - 실무 정산 배치라면 전체 Payment 데이터를 애플리케이션으로 가져오는 방식보다 DB GROUP BY 집계가 더 적절하다.
 - GROUP_BY_QUERY는 Payment 전체 Entity 목록을 애플리케이션으로 로딩하지 않고, DB GROUP BY 결과만 받아 BASIC_LOOP와 같은 계산식과 반올림 정책으로 정산금액을 계산한다.
 - GROUP_BY_QUERY 단계에서는 개선 효과를 분리하기 위해 Settlement 저장 방식을 개별 저장으로 유지한다.
+- GROUP_BY_BULK_SAVE 1차 단계에서는 GROUP_BY_QUERY의 DB GROUP BY 집계 결과를 재사용하고, Settlement 저장 방식만 `saveAll` 기반으로 변경한다.
+- 저장 방식 변경 후에는 집계 결과 건수, 생성 Settlement 수, 실제 저장 Settlement 수가 일치하는지 검증한다.
+- BASIC_LOOP, GROUP_BY_QUERY, GROUP_BY_BULK_SAVE의 가맹점별 금액이 동일한지 검증한다.
+- 10만 건 / Merchant 100개 실험에서는 Settlement 저장 결과가 100건 수준이므로 saveAll 기반 저장 최적화 효과를 제한적으로만 해석한다.
+- 100만 건 / Merchant 5,000개 benchmark-medium 실험에서는 1000만 건으로 가기 전 정합성, 실행 시간, 메모리 부담, 저장 건수 증가 영향을 점검한다.
+- benchmark-medium 데이터셋은 기존 benchmark 데이터에 추가하지 않고 `settlements`, `payments`, `merchants`를 초기화한 뒤 재생성한다.
+- benchmark-medium 재생성 시에도 `batch_job_histories`는 실행 이력이므로 보존한다.
+- 100만 건 기준 측정에서는 BASIC_LOOP 8,253ms, GROUP_BY_QUERY 899ms, GROUP_BY_BULK_SAVE 798ms로 기록되었고, 전략별 Settlement 5,000건과 합계 금액이 동일했다.
+- 1000만 건 / Merchant 5,000~10,000개 실험에서는 GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE 중심으로 대용량 정산 안정성과 실행 시간을 확인한다.
+- `saveAll`만으로 실제 DB batch insert 효과를 단정하지 않고, Hibernate `batch_size`와 PostgreSQL `reWriteBatchedInserts=true`는 저장 병목이 확인된 뒤 분리 검토한다.
+- 인덱스는 1000만 건에서 GROUP_BY_QUERY가 수 초 이상 걸리거나 `EXPLAIN ANALYZE`에서 `payments` 전체 스캔 비용이 크다고 확인될 때 적용을 검토한다.
+- Spring Batch는 1000만 건 실험 이후 단순 속도보다 Job/Step 이력, chunk 처리, 실패 지점 추적, 재시작 가능성 같은 운영성 관점에서 도입 여부를 판단한다.
 - 로컬 벤치마크 데이터 날짜 동기화는 Payment 전체를 Entity List로 로딩하지 않고 벌크 update/delete로 처리한다.
 - 같은 DB 설정에서 비교한다.
 - 실행 시간을 BatchJobHistory에 기록한다.

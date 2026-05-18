@@ -1,8 +1,6 @@
 package com.example.myproject.repository;
 
 import com.example.myproject.domain.payment.Payment;
-import com.example.myproject.domain.payment.PaymentStatus;
-import com.example.myproject.domain.payment.PaymentType;
 import java.time.LocalDate;
 import java.util.List;
 import org.springframework.data.jpa.repository.EntityGraph;
@@ -11,6 +9,10 @@ import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 
 public interface PaymentRepository extends JpaRepository<Payment, Long> {
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("delete from Payment")
+    int deleteAllInBulk();
 
     long countByTransactionDate(LocalDate transactionDate);
 
@@ -29,25 +31,32 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
     @EntityGraph(attributePaths = "merchant")
     List<Payment> findAllByTransactionDate(LocalDate transactionDate);
 
-    @Query("""
-            select new com.example.myproject.repository.PaymentSettlementAggregation(
-                m,
-                m.feeRate,
-                coalesce(sum(case when p.type = :paymentType then p.amount else 0 end), 0),
-                coalesce(sum(case when p.type = :cancelType then p.amount else 0 end), 0),
-                count(p)
-            )
-            from Payment p
-            join p.merchant m
-            where p.transactionDate = :transactionDate
-              and p.status = :status
-            group by m, m.feeRate
-            order by m.id
-            """)
-    List<PaymentSettlementAggregation> aggregateCompletedPaymentsByMerchant(
+    @Query(value = """
+            select
+                agg.merchant_id as merchantId,
+                m.name as merchantName,
+                m.fee_rate as feeRate,
+                agg.payment_amount as paymentAmount,
+                agg.cancel_amount as cancelAmount,
+                agg.processed_count as processedCount
+            from (
+                select
+                    p.merchant_id,
+                    coalesce(sum(case when p.type = :paymentType then p.amount else 0 end), 0) as payment_amount,
+                    coalesce(sum(case when p.type = :cancelType then p.amount else 0 end), 0) as cancel_amount,
+                    count(*) as processed_count
+                from payments p
+                where p.transaction_date = :transactionDate
+                  and p.status = :status
+                group by p.merchant_id
+            ) agg
+            join merchants m on m.id = agg.merchant_id
+            order by agg.merchant_id
+            """, nativeQuery = true)
+    List<PaymentSettlementAggregationProjection> aggregateCompletedPaymentsByMerchant(
             LocalDate transactionDate,
-            PaymentStatus status,
-            PaymentType paymentType,
-            PaymentType cancelType
+            String status,
+            String paymentType,
+            String cancelType
     );
 }

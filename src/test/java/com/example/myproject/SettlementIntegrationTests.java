@@ -14,6 +14,7 @@ import com.example.myproject.domain.settlement.Settlement;
 import com.example.myproject.repository.BatchJobHistoryRepository;
 import com.example.myproject.repository.MerchantRepository;
 import com.example.myproject.repository.PaymentRepository;
+import com.example.myproject.repository.PaymentSettlementAggregationProjection;
 import com.example.myproject.repository.SettlementRepository;
 import com.example.myproject.service.BasicLoopSettlementService;
 import java.math.BigDecimal;
@@ -62,37 +63,19 @@ class SettlementIntegrationTests {
         settlementService.run(SETTLEMENT_DATE, SettlementStrategy.BASIC_LOOP);
         settlementService.run(SETTLEMENT_DATE, SettlementStrategy.GROUP_BY_QUERY);
 
-        List<Settlement> basicLoopSettlements = settlementRepository
-                .findAllBySettlementDateAndProcessingStrategyOrderByFinalSettlementAmountDesc(
-                        SETTLEMENT_DATE,
-                        SettlementStrategy.BASIC_LOOP
-                )
-                .stream()
-                .sorted(Comparator.comparing(settlement -> settlement.getMerchant().getId()))
-                .toList();
-        List<Settlement> groupByQuerySettlements = settlementRepository
-                .findAllBySettlementDateAndProcessingStrategyOrderByFinalSettlementAmountDesc(
-                        SETTLEMENT_DATE,
-                        SettlementStrategy.GROUP_BY_QUERY
-                )
-                .stream()
-                .sorted(Comparator.comparing(settlement -> settlement.getMerchant().getId()))
-                .toList();
+        assertSameSettlementAmounts(SettlementStrategy.BASIC_LOOP, SettlementStrategy.GROUP_BY_QUERY);
+    }
 
-        assertThat(groupByQuerySettlements).hasSameSizeAs(basicLoopSettlements);
-        for (int index = 0; index < basicLoopSettlements.size(); index++) {
-            Settlement basicLoop = basicLoopSettlements.get(index);
-            Settlement groupByQuery = groupByQuerySettlements.get(index);
+    @Test
+    void groupByBulkSaveProducesSameAmountsAsBasicLoopAndGroupByQueryForSameDate() {
+        createMultiMerchantPaymentFixture();
 
-            assertThat(groupByQuery.getMerchant().getId()).isEqualTo(basicLoop.getMerchant().getId());
-            assertThat(groupByQuery.getTotalPaymentAmount()).isEqualByComparingTo(basicLoop.getTotalPaymentAmount());
-            assertThat(groupByQuery.getTotalCancelAmount()).isEqualByComparingTo(basicLoop.getTotalCancelAmount());
-            assertThat(groupByQuery.getNetSalesAmount()).isEqualByComparingTo(basicLoop.getNetSalesAmount());
-            assertThat(groupByQuery.getFeeAmount()).isEqualByComparingTo(basicLoop.getFeeAmount());
-            assertThat(groupByQuery.getFinalSettlementAmount()).isEqualByComparingTo(
-                    basicLoop.getFinalSettlementAmount()
-            );
-        }
+        settlementService.run(SETTLEMENT_DATE, SettlementStrategy.BASIC_LOOP);
+        settlementService.run(SETTLEMENT_DATE, SettlementStrategy.GROUP_BY_QUERY);
+        settlementService.run(SETTLEMENT_DATE, SettlementStrategy.GROUP_BY_BULK_SAVE);
+
+        assertSameSettlementAmounts(SettlementStrategy.BASIC_LOOP, SettlementStrategy.GROUP_BY_BULK_SAVE);
+        assertSameSettlementAmounts(SettlementStrategy.GROUP_BY_QUERY, SettlementStrategy.GROUP_BY_BULK_SAVE);
     }
 
     @Test
@@ -102,6 +85,22 @@ class SettlementIntegrationTests {
         settlementService.run(SETTLEMENT_DATE, SettlementStrategy.GROUP_BY_QUERY);
 
         assertThatThrownBy(() -> settlementService.run(SETTLEMENT_DATE, SettlementStrategy.GROUP_BY_QUERY))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Settlement already exists");
+
+        assertThat(settlementRepository.count()).isEqualTo(1);
+        assertThat(batchJobHistoryRepository.findAll())
+                .extracting(BatchJobHistory::getStatus)
+                .containsExactlyInAnyOrder(BatchJobStatus.SUCCESS, BatchJobStatus.FAILED);
+    }
+
+    @Test
+    void sameDateAndGroupByBulkSaveCannotRunTwice() {
+        createPaymentFixture();
+
+        settlementService.run(SETTLEMENT_DATE, SettlementStrategy.GROUP_BY_BULK_SAVE);
+
+        assertThatThrownBy(() -> settlementService.run(SETTLEMENT_DATE, SettlementStrategy.GROUP_BY_BULK_SAVE))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Settlement already exists");
 
@@ -128,6 +127,38 @@ class SettlementIntegrationTests {
     }
 
     @Test
+    void groupByBulkSaveStoresSameCountAsAggregationsAndRecordsSuccessHistory() {
+        createMultiMerchantPaymentFixture();
+        List<PaymentSettlementAggregationProjection> aggregations = paymentRepository.aggregateCompletedPaymentsByMerchant(
+                SETTLEMENT_DATE,
+                PaymentStatus.COMPLETED.name(),
+                PaymentType.PAYMENT.name(),
+                PaymentType.CANCEL.name()
+        );
+        long aggregationProcessedCount = aggregations.stream()
+                .mapToLong(PaymentSettlementAggregationProjection::getProcessedCount)
+                .sum();
+
+        settlementService.run(SETTLEMENT_DATE, SettlementStrategy.GROUP_BY_BULK_SAVE);
+
+        long savedCount = settlementRepository.countBySettlementDateAndProcessingStrategy(
+                SETTLEMENT_DATE,
+                SettlementStrategy.GROUP_BY_BULK_SAVE
+        );
+        BatchJobHistory history = batchJobHistoryRepository.findAll().get(0);
+
+        assertThat(aggregations).hasSize(2);
+        assertThat(savedCount).isEqualTo(aggregations.size());
+        assertThat(history.getStatus()).isEqualTo(BatchJobStatus.SUCCESS);
+        assertThat(history.getStrategy()).isEqualTo(SettlementStrategy.GROUP_BY_BULK_SAVE);
+        assertThat(history.getElapsedMs()).isGreaterThanOrEqualTo(0);
+        assertThat(history.getProcessedCount()).isEqualTo(aggregationProcessedCount);
+        assertThat(history.getSuccessCount()).isEqualTo(aggregations.size());
+        assertThat(history.getFailureCount()).isZero();
+        assertThat(history.getErrorMessage()).isNull();
+    }
+
+    @Test
     void groupByQueryWithNoCompletedPaymentsReturnsEmptySuccessResult() {
         Merchant merchant = merchantRepository.save(new Merchant("merchant-a", new BigDecimal("0.0300")));
         paymentRepository.save(new Payment(
@@ -145,6 +176,28 @@ class SettlementIntegrationTests {
         assertThat(settlementRepository.count()).isZero();
         assertThat(history.getStatus()).isEqualTo(BatchJobStatus.SUCCESS);
         assertThat(history.getStrategy()).isEqualTo(SettlementStrategy.GROUP_BY_QUERY);
+        assertThat(history.getProcessedCount()).isZero();
+        assertThat(history.getSuccessCount()).isZero();
+    }
+
+    @Test
+    void groupByBulkSaveWithNoCompletedPaymentsReturnsEmptySuccessResult() {
+        Merchant merchant = merchantRepository.save(new Merchant("merchant-a", new BigDecimal("0.0300")));
+        paymentRepository.save(new Payment(
+                merchant,
+                PaymentType.PAYMENT,
+                PaymentStatus.FAILED,
+                new BigDecimal("10000.00"),
+                SETTLEMENT_DATE,
+                LocalDateTime.now()
+        ));
+
+        settlementService.run(SETTLEMENT_DATE, SettlementStrategy.GROUP_BY_BULK_SAVE);
+
+        BatchJobHistory history = batchJobHistoryRepository.findAll().get(0);
+        assertThat(settlementRepository.count()).isZero();
+        assertThat(history.getStatus()).isEqualTo(BatchJobStatus.SUCCESS);
+        assertThat(history.getStrategy()).isEqualTo(SettlementStrategy.GROUP_BY_BULK_SAVE);
         assertThat(history.getProcessedCount()).isZero();
         assertThat(history.getSuccessCount()).isZero();
     }
@@ -206,6 +259,35 @@ class SettlementIntegrationTests {
         assertThat(deletedCount).isEqualTo(2);
         assertThat(settlementRepository.count()).isZero();
         assertThat(batchJobHistoryRepository.findAll()).hasSize(2);
+    }
+
+    private void assertSameSettlementAmounts(SettlementStrategy baselineStrategy, SettlementStrategy targetStrategy) {
+        List<Settlement> baselineSettlements = findSettlements(baselineStrategy);
+        List<Settlement> targetSettlements = findSettlements(targetStrategy);
+
+        assertThat(targetSettlements).hasSameSizeAs(baselineSettlements);
+        for (int index = 0; index < baselineSettlements.size(); index++) {
+            Settlement baseline = baselineSettlements.get(index);
+            Settlement target = targetSettlements.get(index);
+
+            assertThat(target.getMerchant().getId()).isEqualTo(baseline.getMerchant().getId());
+            assertThat(target.getTotalPaymentAmount()).isEqualByComparingTo(baseline.getTotalPaymentAmount());
+            assertThat(target.getTotalCancelAmount()).isEqualByComparingTo(baseline.getTotalCancelAmount());
+            assertThat(target.getNetSalesAmount()).isEqualByComparingTo(baseline.getNetSalesAmount());
+            assertThat(target.getFeeAmount()).isEqualByComparingTo(baseline.getFeeAmount());
+            assertThat(target.getFinalSettlementAmount()).isEqualByComparingTo(baseline.getFinalSettlementAmount());
+        }
+    }
+
+    private List<Settlement> findSettlements(SettlementStrategy strategy) {
+        return settlementRepository
+                .findAllBySettlementDateAndProcessingStrategyOrderByFinalSettlementAmountDesc(
+                        SETTLEMENT_DATE,
+                        strategy
+                )
+                .stream()
+                .sorted(Comparator.comparing(settlement -> settlement.getMerchant().getId()))
+                .toList();
     }
 
     private void createPaymentFixture() {

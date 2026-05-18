@@ -12,7 +12,6 @@ import com.example.myproject.repository.SettlementRepository;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
-import java.util.ArrayList;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -20,14 +19,14 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
-public class GroupBySettlementProcessor {
+public class GroupByBulkSaveSettlementProcessor {
 
-    private static final Logger log = LoggerFactory.getLogger(GroupBySettlementProcessor.class);
+    private static final Logger log = LoggerFactory.getLogger(GroupByBulkSaveSettlementProcessor.class);
 
     private final PaymentRepository paymentRepository;
     private final SettlementRepository settlementRepository;
 
-    public GroupBySettlementProcessor(
+    public GroupByBulkSaveSettlementProcessor(
             PaymentRepository paymentRepository,
             SettlementRepository settlementRepository
     ) {
@@ -37,7 +36,7 @@ public class GroupBySettlementProcessor {
 
     @Transactional
     public SettlementProcessResult run(LocalDate settlementDate) {
-        SettlementStrategy strategy = SettlementStrategy.GROUP_BY_QUERY;
+        SettlementStrategy strategy = SettlementStrategy.GROUP_BY_BULK_SAVE;
         long duplicateCheckStartedAt = System.nanoTime();
         if (settlementRepository.existsBySettlementDateAndProcessingStrategy(settlementDate, strategy)) {
             throw new IllegalStateException("Settlement already exists for date and strategy: "
@@ -58,22 +57,19 @@ public class GroupBySettlementProcessor {
                 .toList();
         long aggregationElapsedNanos = System.nanoTime() - aggregationStartedAt;
 
-        List<Settlement> settlements = new ArrayList<>(aggregations.size());
-        long processedCount = 0;
-        long objectCreationElapsedNanos = 0;
-        long saveElapsedNanos = 0;
-        for (PaymentSettlementAggregation aggregation : aggregations) {
-            processedCount += aggregation.processedCount();
+        long processedCount = aggregations.stream()
+                .mapToLong(PaymentSettlementAggregation::processedCount)
+                .sum();
+        long objectCreationStartedAt = System.nanoTime();
+        List<Settlement> settlements = aggregations.stream()
+                .map(aggregation -> toSettlement(settlementDate, strategy, aggregation))
+                .toList();
+        long objectCreationElapsedNanos = System.nanoTime() - objectCreationStartedAt;
 
-            long objectCreationStartedAt = System.nanoTime();
-            Settlement settlement = toSettlement(settlementDate, strategy, aggregation);
-            objectCreationElapsedNanos += System.nanoTime() - objectCreationStartedAt;
-            long saveStartedAt = System.nanoTime();
-            settlementRepository.save(settlement);
-            saveElapsedNanos += System.nanoTime() - saveStartedAt;
-            afterSettlementSaved(settlement);
-            settlements.add(settlement);
-        }
+        long saveStartedAt = System.nanoTime();
+        List<Settlement> savedSettlements = settlementRepository.saveAll(settlements);
+        long saveElapsedNanos = System.nanoTime() - saveStartedAt;
+        afterSettlementsSaved(savedSettlements);
 
         log.info(
                 "settlement timing date={} strategy={} section=processor duplicate_check_ms={} aggregation_ms={} object_creation_ms={} save_ms={} processed_count={} settlement_count={}",
@@ -84,12 +80,12 @@ public class GroupBySettlementProcessor {
                 toMillis(objectCreationElapsedNanos),
                 toMillis(saveElapsedNanos),
                 processedCount,
-                settlements.size()
+                savedSettlements.size()
         );
-        return new SettlementProcessResult(processedCount, settlements);
+        return new SettlementProcessResult(processedCount, savedSettlements);
     }
 
-    protected void afterSettlementSaved(Settlement settlement) {
+    protected void afterSettlementsSaved(List<Settlement> settlements) {
     }
 
     private PaymentSettlementAggregation toAggregation(PaymentSettlementAggregationProjection projection) {

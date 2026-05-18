@@ -20,4 +20,9 @@ dummy-data:
   batch-size: 1000
 
 benchmark:
-  data-date-sync-enabled: true
+  profile: small
+  reset-enabled: false
+  merchant-count: 100
+  payment-count: 100000
+  batch-size: 1000
+  target-date-sync-enabled: true

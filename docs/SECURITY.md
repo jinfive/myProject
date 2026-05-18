@@ -197,6 +197,46 @@ POST /api/admin/database/reset
 
 ---
 
+## 6.1.1 로컬 개발 CORS 기준
+
+로컬 개발에서는 Vite 프론트엔드와 Spring Boot 백엔드가 다른 origin으로 실행된다.
+
+```txt
+Frontend: http://localhost:5173
+Backend: http://localhost:8080
+```
+
+따라서 `/api/**`에 대해 로컬 개발 origin을 제한적으로 허용한다.
+
+```txt
+http://localhost:5173
+http://127.0.0.1:5173
+```
+
+정산 결과 초기화 API는 `DELETE /api/settlements?date=...` 요청을 사용하므로 브라우저가 OPTIONS preflight를 먼저 보낸다. CORS 허용 메서드에는 `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`를 포함한다.
+
+운영 환경에서는 `allowedOrigins("*")`를 사용하지 않고 실제 배포 origin만 허용해야 한다.
+
+---
+
+## 6.1.2 로컬 benchmark 데이터 재생성 통제
+
+benchmark-medium 데이터셋은 로컬 성능 측정을 위한 기능이며 운영 기능이 아니다.
+
+재생성 시 다음 데이터가 삭제된다.
+
+```txt
+settlements
+payments
+merchants
+```
+
+`batch_job_histories`는 실행 이력이므로 삭제하지 않는다.
+
+이 기능은 기본 실행에서 비활성화하고, `benchmark-medium` 프로파일과 `benchmark.reset-enabled=true` 설정이 명시된 경우에만 실행한다. 외부 공개 환경이나 운영 환경에서는 benchmark reset 설정을 켜지 않는다.
+
+---
+
 ## 6.2 2단계에서 보호가 필요한 API
 
 2단계에서 다음 API는 보호 대상이다.
@@ -305,6 +345,8 @@ settlementDate는 YYYY-MM-DD 형식이어야 한다.
 processingStrategy는 BASIC_LOOP, GROUP_BY_QUERY, GROUP_BY_BULK_SAVE, GROUP_BY_BULK_INDEX 중 하나여야 한다.
 pageSize는 상한선을 둔다.
 ```
+
+현재 실행 가능한 정산 전략은 `BASIC_LOOP`, `GROUP_BY_QUERY`, `GROUP_BY_BULK_SAVE`이다. `GROUP_BY_BULK_INDEX`는 enum 값으로는 허용되지만 아직 구현되지 않았으므로 서버에서 명확한 미구현 오류로 응답해야 한다.
 
 2단계 입력 검증 예시:
 

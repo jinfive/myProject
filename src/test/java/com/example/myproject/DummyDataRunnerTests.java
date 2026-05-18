@@ -38,4 +38,31 @@ class DummyDataRunnerTests {
         verify(dummyDataService).generateIfEmpty();
         verify(syncService, never()).syncTo(org.mockito.ArgumentMatchers.any());
     }
+
+    @Test
+    void regeneratesBenchmarkDataAndSkipsDefaultGenerationWhenResetIsEnabled() {
+        DummyDataService dummyDataService = mock(DummyDataService.class);
+        BenchmarkDataDateSyncService syncService = mock(BenchmarkDataDateSyncService.class);
+        PaymentRepository paymentRepository = mock(PaymentRepository.class);
+        DummyDataProperties dummyDataProperties = new DummyDataProperties();
+        BenchmarkDataProperties benchmarkDataProperties = new BenchmarkDataProperties();
+        benchmarkDataProperties.setResetEnabled(true);
+        benchmarkDataProperties.setProfile("medium");
+        benchmarkDataProperties.setMerchantCount(5_000);
+        benchmarkDataProperties.setPaymentCount(1_000_000);
+
+        DummyDataRunner runner = new DummyDataRunner(
+                dummyDataService,
+                dummyDataProperties,
+                benchmarkDataProperties,
+                syncService,
+                paymentRepository
+        );
+
+        runner.run(null);
+
+        verify(dummyDataService).regenerateBenchmark(benchmarkDataProperties);
+        verify(dummyDataService, never()).generateIfEmpty();
+        verify(syncService, never()).syncTo(org.mockito.ArgumentMatchers.any());
+    }
 }
