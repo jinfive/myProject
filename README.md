@@ -82,6 +82,28 @@
 10. IDENTITY -> SEQUENCE 변경
     - `Settlement.id`를 SEQUENCE 전략으로 변경해 저장 구간과 API 전체 시간을 비교했습니다.
 
+### GROUP_BY_QUERY 쿼리 구조 개선
+
+초기 `GROUP_BY_QUERY`는 `payments`와 `merchants`를 먼저 조인한 뒤 `m.id`, `m.name`, `m.fee_rate` 기준으로 GROUP BY를 수행했습니다. 1000만 건 조건에서는 조인 이후 중간 데이터가 커지고, GROUP BY 과정에서 temp spill이 크게 발생했습니다.
+
+정산에 필요한 핵심 집계는 `payments` 테이블의 `merchant_id` 기준 결제/취소 금액 합계라고 판단했습니다. 그래서 `payments`를 먼저 `merchant_id` 기준으로 집계하고, 줄어든 집계 결과만 `merchants`와 조인하는 구조로 변경했습니다.
+
+| 구분 | 기존 방식 | 개선 방식 |
+|---|---|---|
+| 처리 순서 | `payments + merchants` 조인 후 GROUP BY | `payments` 선집계 후 `merchants` 조인 |
+| 집계 기준 | `m.id`, `m.name`, `m.fee_rate` | `p.merchant_id` |
+| 처리 건수 계산 | `count(p.id)` | `count(*)` |
+| 의도 | merchant 정보 포함 상태로 집계 | 중간 데이터 크기와 temp spill 감소 |
+
+| 항목 | 개선 전 | 개선 후 |
+|---|---:|---:|
+| EXPLAIN 실행 시간 | 3,855ms | 3,274ms |
+| API `GROUP_BY_QUERY` | 5,026ms | 4,796ms |
+| API `GROUP_BY_BULK_SAVE` | 4,596ms | 4,149ms |
+| temp written | 92,954 | 47,200 |
+
+두 전략의 정산 합계 동일성을 확인했고, 중복 실행 시 `409 Conflict` 동작과 `./gradlew test` 통과 기록도 유지했습니다.
+
 ## 6. 최종 성능 결과
 
 ### 100만 건 확장 실험

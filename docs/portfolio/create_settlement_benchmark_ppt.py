@@ -259,6 +259,24 @@ def make_slides() -> list[Slide]:
             ],
         ),
         Slide(
+            "쿼리 구조 개선: 조인 후 집계에서 선집계 후 조인으로",
+            "쿼리 구조 개선",
+            "정산에 필요한 Payment 집계를 먼저 줄인 뒤 Merchant 정보를 조인",
+            [
+                Shape("box", 0.75, 1.35, 5.75, 1.35, "기존 구조\npayments + merchants 조인\n→ GROUP BY\n→ temp spill 증가", red, "FCA5A5", size=16, bold=True, align="c", radius=True),
+                Shape("box", 6.85, 1.35, 5.75, 1.35, "개선 구조\npayments 선집계\n→ merchants 조인\n→ 중간 데이터 감소", green, "86EFAC", size=16, bold=True, align="c", radius=True),
+                Shape("bullets", 0.95, 3.05, 5.35, 1.1, items=["기존: m.id, m.name, m.fee_rate 기준 GROUP BY", "개선: p.merchant_id 기준 선집계 + count(*)"], fill="FFFFFF", line="E2E8F0", size=14, radius=True),
+                Shape("bullets", 7.05, 3.05, 5.25, 1.1, items=["핵심 집계는 payments 기준 금액 합계", "merchant 정보는 집계 후 조인해도 충분"], fill="FFFFFF", line="E2E8F0", size=14, radius=True),
+                Shape("box", 1.05, 4.55, 11.25, 1.35,
+                      "항목                    개선 전       개선 후\n"
+                      "EXPLAIN                 3,855ms       3,274ms\n"
+                      "GROUP_BY_QUERY          5,026ms       4,796ms\n"
+                      "GROUP_BY_BULK_SAVE      4,596ms       4,149ms\n"
+                      "temp written            92,954        47,200",
+                      "FFFFFF", "CBD5E1", size=13, radius=True),
+            ],
+        ),
+        Slide(
             "트러블슈팅 1: work_mem과 temp spill",
             "메모리 병목",
             "병목을 감으로 판단하지 않고 EXPLAIN과 temp 지표로 확인",
