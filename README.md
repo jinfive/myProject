@@ -484,6 +484,23 @@ spring.jpa.properties.hibernate.order_updates: true
 
 두 전략 모두 `processedCount=322,581`, Settlement 10,000건을 생성했고, 결제금액 27,066,846,805.00, 취소금액 3,387,078,413.00, 수수료 447,339,420.65, 최종 정산금액 23,232,428,971.35가 동일했다. 이번 측정에서는 API 시간과 저장 시간이 개선됐지만, SQL 형태상 true bulk insert가 확인되지는 않았다. 따라서 Hibernate `batch_size`만으로 충분하다고 보기 어렵고, 다음 단계에서는 `JdbcTemplate batchUpdate`처럼 generated id를 받지 않는 명시적 bulk 저장 전략을 별도로 비교한다.
 
+### SEQUENCE ID 전략 + Hibernate batch_size 실험
+
+IDENTITY는 insert 직후 generated id를 받아야 하므로 Hibernate batch insert에 불리하다. 이를 확인하기 위해 `Settlement.id`를 `GenerationType.SEQUENCE`로 변경하고 `settlement_seq`, `allocationSize=1000`을 적용했다. 실험 profile은 Hibernate `batch_size=1000`, `order_inserts=true`, `order_updates=true`를 유지했다.
+
+PostgreSQL에서는 Hibernate `ddl-auto=update`가 `settlement_seq`를 생성했고, 로컬 스키마 보정 러너가 기존 `settlements.id` 최대값보다 뒤로 sequence 값을 보정한다. 측정 전 로컬 DB에는 기존 IDENTITY용 `settlements_id_seq`만 있었고, 실행 후 `settlement_seq`가 생성됐다.
+
+SQL 로그에서는 insert 전에 `select nextval('settlement_seq')`가 먼저 실행되고, insert 문에는 `id` 값이 포함됐다. insert SQL 로그는 여전히 같은 insert 문이 반복 출력되지만, SEQUENCE에서는 id를 미리 확보할 수 있어 IDENTITY 대비 저장 구간과 API 전체 시간이 크게 줄었다. 단, SEQUENCE에서는 insert가 flush 시점으로 지연될 수 있어 `save_ms`는 실제 DB insert 실행 전체가 아니라 persist 단계에 가까우며, API 전체 시간을 함께 봐야 한다.
+
+| 전략 | ID 전략 | DB집계조회 평균 | 저장 평균 | API 전체 평균 |
+|---|---|---:|---:|---:|
+| GROUP_BY_QUERY | IDENTITY | 297.837ms | 1,105.225ms | 1,490.271ms |
+| GROUP_BY_BULK_SAVE | IDENTITY | 276.100ms | 975.471ms | 1,289.364ms |
+| GROUP_BY_QUERY | SEQUENCE | 258.032ms | 101.945ms | 755.662ms |
+| GROUP_BY_BULK_SAVE | SEQUENCE | 281.536ms | 40.449ms | 696.352ms |
+
+두 전략 모두 `processedCount=322,581`, Settlement 10,000건을 생성했고, 결제금액 27,066,846,805.00, 취소금액 3,387,078,413.00, 수수료 447,339,420.65, 최종 정산금액 23,232,428,971.35가 동일했다. IDENTITY 대비 SEQUENCE 변경은 저장 병목을 크게 줄였고, 다음 단계에서는 PostgreSQL `reWriteBatchedInserts=true` 또는 `JdbcTemplate batchUpdate`가 추가 개선을 만드는지 별도 비교한다.
+
 API 목록:
 
 ```text

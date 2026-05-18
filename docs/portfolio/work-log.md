@@ -1037,3 +1037,130 @@ SQL 로그에서는 `insert into settlements (...) values (...)` 문장이 Settl
 두 전략 모두 `processedCount=322,581`, Settlement 10,000건을 생성했다. 결제금액 27,066,846,805.00, 취소금액 3,387,078,413.00, 수수료 447,339,420.65, 최종 정산금액 23,232,428,971.35는 동일했다.
 
 Hibernate `batch_size`만으로 API 시간은 개선됐지만, IDENTITY 제약과 개별 insert 로그가 남아 있어 충분한 bulk 저장 전략으로 보기는 어렵다. 다음 단계에서는 ID 생성값을 애플리케이션에서 사용하지 않는 정산 저장 특성을 활용해 `JdbcTemplate batchUpdate` 기반 명시적 bulk insert 전략을 별도 구현해 비교한다.
+
+## Settlement ID 전략 SEQUENCE 변경 후 저장 성능 재측정
+
+### 1. 목표
+
+IDENTITY 전략은 insert 직후 DB가 생성한 id를 받아야 하므로 Hibernate batch insert에 불리하다. 따라서 `Settlement.id`를 SEQUENCE 전략으로 변경하고, 기존 Hibernate `batch_size=1000` 설정과 함께 저장 성능을 다시 측정했다.
+
+### 2. 변경 내용
+
+`Settlement.id`에 `@SequenceGenerator(name = "settlement_seq_generator", sequenceName = "settlement_seq", allocationSize = 1000)`를 추가하고, `@GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "settlement_seq_generator")`로 변경했다.
+
+PostgreSQL sequence는 Hibernate `ddl-auto=update`가 `settlement_seq`로 생성한다. 기존 로컬 DB에는 `settlements_id_seq`만 있었으므로, 로컬 스키마 보정 러너에서 `settlement_seq`를 만들고 현재 `settlements.id` 최대값보다 뒤로 `setval`하는 보정을 추가했다. 기존 row와 sequence 발급 id가 충돌하지 않도록 하기 위한 처리다.
+
+### 3. 측정 결과
+
+2026-05-17 기준으로 매 실행 전 해당 날짜 settlements만 삭제하고, GROUP_BY_QUERY와 GROUP_BY_BULK_SAVE를 각각 3회 측정했다.
+
+| 전략 | ID 전략 | DB집계조회 평균 | 저장 평균 | API 전체 평균 |
+|---|---|---:|---:|---:|
+| GROUP_BY_QUERY | IDENTITY | 297.837ms | 1,105.225ms | 1,490.271ms |
+| GROUP_BY_BULK_SAVE | IDENTITY | 276.100ms | 975.471ms | 1,289.364ms |
+| GROUP_BY_QUERY | SEQUENCE | 258.032ms | 101.945ms | 755.662ms |
+| GROUP_BY_BULK_SAVE | SEQUENCE | 281.536ms | 40.449ms | 696.352ms |
+
+### 4. insert 방식 확인
+
+SQL 로그에서 insert 전에 `select nextval('settlement_seq')`가 먼저 실행되는 것을 확인했다. insert 문은 `insert into settlements (..., id) values (..., ?)` 형태로 id를 포함했다. SQL 로그에는 같은 insert 문이 반복 출력되지만, IDENTITY처럼 insert 직후 generated id를 받아야 하는 구조는 사라졌다.
+
+SEQUENCE에서는 insert 실행이 transaction flush 시점으로 밀릴 수 있다. 따라서 기존 `save_ms` 로그는 실제 DB insert 전체 시간을 모두 포함하지 않고 persist 및 sequence 할당 단계에 더 가깝다. 그래서 저장 개선 여부는 `save_ms`뿐 아니라 API 전체 시간과 함께 판단했다.
+
+### 5. 정합성 및 판단
+
+두 전략 모두 `processedCount=322,581`, Settlement 10,000건을 생성했다. 결제금액 27,066,846,805.00, 취소금액 3,387,078,413.00, 수수료 447,339,420.65, 최종 정산금액 23,232,428,971.35는 동일했다.
+
+SEQUENCE 변경 후 API 전체 평균은 GROUP_BY_QUERY 1,490.271ms에서 755.662ms로, GROUP_BY_BULK_SAVE 1,289.364ms에서 696.352ms로 줄었다. IDENTITY가 저장 batch 효율을 막는 주요 원인이라는 판단이 강화됐다.
+
+---
+
+## Troubleshooting: JPQL count(p)와 Index Only Scan 문제
+
+### 1. 문제 발견
+
+`benchmark-large-date-distributed` 조건에서 covering index를 적용한 뒤 수동 EXPLAIN은 `Index Only Scan`, `Heap Fetches=0`으로 바뀌었고 실행 시간도 약 75~119ms 수준까지 줄었다. 하지만 같은 정산일자를 API로 실행하면 DB 집계 조회 구간이 3~4초대로 측정됐다. 인덱스 자체는 효과가 있어 보이는데 API 경로에서는 같은 효과가 나타나지 않는 상황이었다.
+
+### 2. 원인 분석
+
+수동 SQL은 `count(*)`를 사용했지만, API Repository의 JPQL은 `count(p)`를 사용하고 있었다. Hibernate SQL 로그를 확인하니 JPQL `count(p)`가 실제 SQL에서는 `count(p.id)`로 변환됐다.
+
+covering index는 `transaction_date`, `status`, `merchant_id`, `type`, `amount`를 포함하지만 `id`는 포함하지 않는다. 따라서 `count(p.id)`를 수행하면 DB가 `id` 확인을 위해 heap 접근을 해야 했고, API 경로에서는 `Index Only Scan`이 아니라 `Bitmap Heap Scan`이 발생했다. 결과적으로 수동 EXPLAIN과 API 실행계획이 달라졌다.
+
+### 3. 대안 검토
+
+첫 번째 대안은 covering index에 `id`를 추가하는 것이었다. 하지만 집계 쿼리에서 실제로 필요한 값은 `id`가 아니라 row count이므로, ORM 변환 때문에 인덱스 컬럼을 늘리는 방식은 문제 원인을 우회하는 접근에 가깝다고 봤다.
+
+두 번째 대안은 JPQL을 유지하면서 다른 표현으로 count를 유도하는 것이었다. 다만 Hibernate가 최종 SQL을 어떻게 생성하는지 다시 확인해야 하고, `count(*)`를 명시적으로 보장하기 어렵다.
+
+최종 선택은 집계 쿼리를 native query로 분리하고 `count(*)`를 명시하는 것이었다. JPQL constructor projection을 사용할 수 없으므로 native query 결과는 interface projection으로 받도록 분리했다.
+
+### 4. 수정
+
+JPQL 생성자 projection 기반 집계 쿼리를 native query로 분리했다. 집계 count는 `count(*)`로 명시했고, native query 결과 매핑을 위해 interface projection을 추가했다. 이후 API 실제 SQL 로그에서 `count(*)`가 나가는지 확인했다.
+
+### 5. 검증
+
+API 경로의 EXPLAIN에서 `Parallel Index Only Scan using idx_payments_settlement_covering`, `Heap Fetches=0`, `Execution Time=74.988ms`, 결과 10,000 rows를 확인했다. 구간별 측정에서도 DB 집계 조회는 GROUP_BY_QUERY 280.836ms, GROUP_BY_BULK_SAVE 308.998ms 수준으로 줄었다.
+
+정합성도 함께 확인했다. 두 전략 모두 `processedCount=322,581`, Settlement 10,000건을 생성했고, 결제금액 27,066,846,805.00, 취소금액 3,387,078,413.00, 수수료 447,339,420.65, 최종 정산금액 23,232,428,971.35가 동일했다.
+
+### 6. 결과
+
+기본 조회 대비 최종 개선 후 EXPLAIN은 2,242.501ms에서 74.988ms로 줄었다. API 전체 시간은 GROUP_BY_QUERY가 3,021.333ms에서 1,627.667ms로, GROUP_BY_BULK_SAVE가 2,478.333ms에서 2,058.000ms로 줄었다. 단순히 인덱스를 추가한 것이 아니라, 실제 API SQL이 인덱스만으로 처리 가능한 형태인지 확인해야 개선 효과가 유지된다는 점을 확인했다.
+
+### 7. 배운 점
+
+ORM 코드와 실제 SQL은 다를 수 있다. 특히 성능 문제에서는 Repository 코드가 아니라 Hibernate SQL 로그, 바인딩 파라미터, EXPLAIN 결과를 기준으로 판단해야 한다. `count(*)`와 `count(id)`는 결과값은 같아 보여도 covering index 사용 여부에는 큰 차이를 만들 수 있다.
+
+## Troubleshooting: saveAll과 IDENTITY 전략의 batch insert 한계
+
+### 1. 문제 발견
+
+`GROUP_BY_BULK_SAVE`는 `saveAll`을 사용했지만 기대만큼 빠르지 않았다. native `count(*)` 적용 후 DB 집계조회 병목이 줄어든 상태에서도 API 전체 시간은 GROUP_BY_QUERY 1,627.667ms, GROUP_BY_BULK_SAVE 2,058.000ms로 측정됐다. 이름은 BULK_SAVE였지만 실제 저장 경로가 DB 관점의 bulk insert인지 확인이 필요했다.
+
+### 2. 원인 분석
+
+SQL 로그를 확인하니 `insert into settlements (...) values (...)`가 Settlement 10,000건에 대해 개별 반복으로 출력됐다. multi-row insert나 명확한 JDBC batch insert 형태는 확인되지 않았다.
+
+설정도 다시 확인했다. `dummy-data.batch-size`와 `benchmark.batch-size`는 더미 데이터 생성 chunk 설정이지 Hibernate insert batch 설정이 아니었다. 당시 기본 설정에는 `spring.jpa.properties.hibernate.jdbc.batch_size`, `hibernate.order_inserts`, `hibernate.order_updates`가 없었다. 또한 `Settlement.id`가 `GenerationType.IDENTITY`였고, IDENTITY는 insert 후 DB가 생성한 id를 받아야 하므로 Hibernate batch insert에 불리하다.
+
+### 3. 대안 검토
+
+첫 번째 대안은 `saveAll`만 유지하고 더 이상 변경하지 않는 것이었다. 하지만 SQL 로그상 개별 insert가 반복되므로 저장 병목을 설명하기 어렵다.
+
+두 번째 대안은 Hibernate `jdbc.batch_size`, `order_inserts`, `order_updates`만 적용하는 것이었다. 실제로 별도 profile에서 `batch_size=1000`을 실험했고 API 시간은 줄었지만, IDENTITY 제약과 개별 insert 로그가 남아 true bulk insert라고 단정하기는 어려웠다.
+
+세 번째 대안은 id 생성 전략을 SEQUENCE로 바꾸는 것이었다. 정산 저장 후 애플리케이션에서 generated id를 즉시 사용하지 않으므로, id를 미리 확보하는 SEQUENCE 전략이 Hibernate batch 처리에 더 적합하다고 판단했다.
+
+### 4. 수정 및 실험
+
+별도 benchmark profile에서 Hibernate `jdbc.batch_size=1000`, `order_inserts=true`, `order_updates=true`를 실험했다. 이후 `Settlement.id`를 IDENTITY에서 SEQUENCE로 변경하고, `settlement_seq`, `allocationSize=1000`을 적용했다. 기존 로컬 데이터와 sequence 발급 id가 충돌하지 않도록 `LocalSchemaMigrationRunner`에서 기존 `max(id)+1000` 이후로 `settlement_seq`를 `setval` 보정했다.
+
+### 5. 검증
+
+IDENTITY 유지 + Hibernate batch 설정에서는 GROUP_BY_QUERY API 전체 평균 1,490.271ms, GROUP_BY_BULK_SAVE API 전체 평균 1,289.364ms를 기록했다. SEQUENCE 변경 후에는 GROUP_BY_QUERY 755.662ms, GROUP_BY_BULK_SAVE 696.352ms로 줄었다. 감소율은 각각 약 49%, 약 46%다.
+
+SQL 로그에서는 insert 전에 `select nextval('settlement_seq')`가 실행되고 insert 문에 `id` 값이 포함되는 것을 확인했다. SEQUENCE에서는 insert가 flush 시점으로 지연될 수 있으므로 `save_ms`만으로 판단하지 않고 API 전체 시간을 함께 봤다.
+
+정합성도 유지됐다. 두 전략 모두 `processedCount=322,581`, Settlement 10,000건을 생성했고, 결제금액 27,066,846,805.00, 취소금액 3,387,078,413.00, 수수료 447,339,420.65, 최종 정산금액 23,232,428,971.35가 동일했다.
+
+### 6. 결과
+
+`saveAll`은 코드상 일괄 저장 호출이지만, 설정과 ID 전략에 따라 실제 DB bulk insert처럼 동작하지 않을 수 있다는 점을 확인했다. IDENTITY 전략에서는 Hibernate batch insert 효과가 제한됐고, SEQUENCE + allocationSize 적용 후 저장 구간과 API 전체 시간이 크게 개선됐다.
+
+### 7. 배운 점
+
+성능 개선은 메서드 이름이나 프레임워크 기대 동작만으로 판단하면 안 된다. `saveAll`을 썼다는 사실보다 SQL 로그에서 실제 insert가 어떻게 나가는지 확인하는 것이 중요하다. 금융 정산 배치에서는 성능 개선 후에도 처리 건수와 금액 합계가 동일한지 함께 확인해야 한다.
+
+## 오늘의 학습 포인트
+
+- 기능 구현에서 끝내지 않고 실제 실행계획과 SQL 로그를 확인해야 병목을 정확히 설명할 수 있다.
+- 수동 SQL과 API SQL은 다를 수 있으므로, API 경로의 실제 SQL과 EXPLAIN을 기준으로 판단해야 한다.
+- covering index는 쿼리에 필요한 컬럼을 모두 인덱스에서 해결할 때 효과가 있으며, `count(*)`와 `count(id)` 차이도 실행계획을 바꿀 수 있다.
+- `saveAll`은 JPA 호출 구조를 단순화할 뿐이며, Hibernate batch 설정과 ID 생성 전략에 따라 실제 insert 방식은 달라진다.
+- 금융 IT 관점에서는 성능 수치뿐 아니라 `processedCount`, Settlement 건수, 총액 동일성으로 정합성을 함께 확인해야 한다.
+
+## 면접 설명용 요약
+
+인덱스 적용 후 수동 SQL은 빨랐지만 API는 여전히 느렸고, 실제 SQL을 확인해 JPQL `count(p)`가 `count(p.id)`로 변환되는 문제를 찾았습니다. native query에서 `count(*)`를 명시하고 interface projection으로 결과를 받도록 바꿔 API에서도 `Index Only Scan`, `Heap Fetches=0`이 나오도록 확인했습니다. 이후 DB 집계조회 시간이 수백 ms대로 줄었고, 처리 건수와 총액 정합성도 유지했습니다. `saveAll`도 실제 bulk insert처럼 동작하는지 SQL 로그로 확인했고, 개별 insert가 반복되는 것을 확인했습니다. `dummy-data.batch-size`와 `benchmark.batch-size`는 Hibernate batch 설정이 아니라는 점, 그리고 IDENTITY 전략이 batch insert에 불리하다는 점을 확인했습니다. Hibernate batch 설정과 SEQUENCE 전략을 실험해 GROUP_BY_QUERY API 전체 시간은 약 49%, GROUP_BY_BULK_SAVE API 전체 시간은 약 46% 줄었습니다. 이 과정에서 성능 개선은 감이 아니라 실행계획, SQL 로그, 구간별 측정, 정합성 검증을 함께 기준으로 판단해야 한다는 점을 배웠습니다.
