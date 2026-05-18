@@ -12,6 +12,7 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
+import jakarta.persistence.SequenceGenerator;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
 import java.math.BigDecimal;
@@ -30,7 +31,15 @@ import java.time.LocalDate;
 public class Settlement {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @SequenceGenerator(
+            name = "settlement_seq_generator",
+            sequenceName = "settlement_seq",
+            allocationSize = 1000
+    )
+    @GeneratedValue(
+            strategy = GenerationType.SEQUENCE,
+            generator = "settlement_seq_generator"
+    )
     private Long id;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)

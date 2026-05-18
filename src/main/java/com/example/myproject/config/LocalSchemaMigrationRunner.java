@@ -35,6 +35,7 @@ public class LocalSchemaMigrationRunner implements ApplicationRunner {
         }
 
         migrateProcessingStrategy();
+        migrateSettlementSequence();
     }
 
     private void migrateProcessingStrategy() {
@@ -91,6 +92,21 @@ public class LocalSchemaMigrationRunner implements ApplicationRunner {
                             unique (merchant_id, settlement_date, processing_strategy);
                     end if;
                 end $$;
+                """);
+    }
+
+    private void migrateSettlementSequence() {
+        if (!tableExists("settlements")) {
+            return;
+        }
+
+        jdbcTemplate.execute("create sequence if not exists settlement_seq increment by 1000");
+        jdbcTemplate.execute("""
+                select setval(
+                    'settlement_seq',
+                    greatest((select coalesce(max(id), 0) + 1000 from settlements), 1000),
+                    false
+                )
                 """);
     }
 
